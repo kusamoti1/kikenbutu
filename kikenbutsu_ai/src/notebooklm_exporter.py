@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import logging
 import sqlite3
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 MAX_FILE_SIZE_MB = 10
 
@@ -22,78 +25,104 @@ ERA_SECTION_MAP = {
     "令和": "令和基準",
 }
 
+# Maximum number of items in the summary section to keep it useful.
+_MAX_SUMMARY_ITEMS = 30
+
 
 def export_markdown_by_equipment(db_path: Path, output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
 
-    equipment_rows = conn.execute("SELECT id, name FROM equipment ORDER BY name").fetchall()
-    for equipment_id, equipment_name in equipment_rows:
-        section_content: dict[str, list[str]] = {s: [] for s in SECTIONS}
+    try:
+        equipment_rows = conn.execute("SELECT id, name FROM equipment ORDER BY name").fetchall()
+        if not equipment_rows:
+            logger.warning("No equipment data found. NotebookLM export skipped.")
+            return
 
-        standards = conn.execute(
-            "SELECT id, name FROM standards WHERE equipment_id = ? ORDER BY name", (equipment_id,)
+        for equipment_id, equipment_name in equipment_rows:
+            _export_one_equipment(conn, output_dir, equipment_id, equipment_name)
+    finally:
+        conn.close()
+
+
+def _export_one_equipment(
+    conn: sqlite3.Connection,
+    output_dir: Path,
+    equipment_id: int,
+    equipment_name: str,
+) -> None:
+    section_content: dict[str, list[str]] = {s: [] for s in SECTIONS}
+
+    standards = conn.execute(
+        "SELECT id, name FROM standards WHERE equipment_id = ? ORDER BY name", (equipment_id,)
+    ).fetchall()
+
+    for std_id, std_name in standards:
+        section_content["関係通知"].append(f"- {std_name}")
+
+        law_links = conn.execute(
+            "SELECT law_name, article_number FROM law_article_links WHERE standard_id = ?",
+            (std_id,),
         ).fetchall()
+        for law_name, article_number in law_links:
+            entry = f"- {law_name} {article_number}"
+            if entry not in section_content["関係条文"]:
+                section_content["関係条文"].append(entry)
 
-        for std_id, std_name in standards:
-            section_content["関係通知"].append(f"- {std_name}")
+    paragraphs = conn.execute(
+        """
+        SELECT p.text FROM paragraphs p
+        JOIN documents d ON p.document_id = d.id
+        JOIN standards s ON s.name = d.title
+        WHERE s.equipment_id = ?
+        ORDER BY d.title, p.id
+        """,
+        (equipment_id,),
+    ).fetchall()
 
-            law_links = conn.execute(
-                "SELECT law_name, article_number FROM law_article_links WHERE standard_id = ?",
-                (std_id,),
-            ).fetchall()
-            for law_name, article_number in law_links:
-                entry = f"- {law_name} {article_number}"
-                if entry not in section_content["関係条文"]:
-                    section_content["関係条文"].append(entry)
+    for (text,) in paragraphs:
+        section_content["原文"].append(f"> {text}")
 
-        paragraphs = conn.execute(
-            """
-            SELECT p.text FROM paragraphs p
-            JOIN documents d ON p.document_id = d.id
-            JOIN standards s ON s.name = d.title
-            WHERE s.equipment_id = ?
-            ORDER BY d.title, p.id
-            """,
-            (equipment_id,),
-        ).fetchall()
+        for era_key, section_name in ERA_SECTION_MAP.items():
+            if era_key in text:
+                section_content[section_name].append(f"- {text[:200]}")
 
-        for (text,) in paragraphs:
-            section_content["原文"].append(f"> {text}")
-            section_content["概要"].append(f"- {text[:100]}...")
+    # Build a concise summary rather than repeating every paragraph.
+    total = len(paragraphs)
+    summary_lines = [f"- 通知段落数: {total}件"]
+    if standards:
+        summary_lines.append(f"- 関連基準数: {len(standards)}件")
+    for (text,) in paragraphs[:_MAX_SUMMARY_ITEMS]:
+        summary_lines.append(f"- {text[:120]}")
+    if total > _MAX_SUMMARY_ITEMS:
+        summary_lines.append(f"- （他 {total - _MAX_SUMMARY_ITEMS} 件省略）")
+    section_content["概要"] = summary_lines
 
-            for era_key, section_name in ERA_SECTION_MAP.items():
-                if era_key in text:
-                    section_content[section_name].append(f"- {text[:200]}")
-
-        lines = [f"# {equipment_name}", ""]
-        for section in SECTIONS:
-            lines.append(f"## {section}")
-            lines.append("")
-            content = section_content.get(section, [])
-            if content:
-                lines.extend(content)
-            else:
-                lines.append("（データなし）")
-            lines.append("")
-
-        md_text = "\n".join(lines).strip() + "\n"
-
-        size_mb = len(md_text.encode("utf-8")) / (1024 * 1024)
-        if size_mb > MAX_FILE_SIZE_MB:
-            _export_split(output_dir, equipment_name, section_content, SECTIONS)
+    lines = [f"# {equipment_name}", ""]
+    for section in SECTIONS:
+        lines.append(f"## {section}")
+        lines.append("")
+        content = section_content.get(section, [])
+        if content:
+            lines.extend(content)
         else:
-            out = output_dir / f"{equipment_name}.md"
-            out.write_text(md_text, encoding="utf-8")
+            lines.append("（データなし）")
+        lines.append("")
 
-    conn.close()
+    md_text = "\n".join(lines).strip() + "\n"
+
+    size_mb = len(md_text.encode("utf-8")) / (1024 * 1024)
+    if size_mb > MAX_FILE_SIZE_MB:
+        _export_split(output_dir, equipment_name, section_content)
+    else:
+        out = output_dir / f"{equipment_name}.md"
+        out.write_text(md_text, encoding="utf-8")
 
 
 def _export_split(
     output_dir: Path,
     equipment_name: str,
     section_content: dict[str, list[str]],
-    sections: list[str],
 ) -> None:
     """Split large equipment files into era-based parts."""
     base_sections = ["概要", "関係通知", "関係条文"]

@@ -1,20 +1,32 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import cv2
 import numpy as np
 
+logger = logging.getLogger(__name__)
+
+# Minimum number of non-white pixels required for deskew to be meaningful.
+_MIN_DESKEW_POINTS = 5
+
 
 def _deskew(gray: np.ndarray) -> np.ndarray:
     coords = np.column_stack(np.where(gray < 255))
-    if coords.size == 0:
+    if coords.shape[0] < _MIN_DESKEW_POINTS:
+        # Not enough dark pixels to reliably detect rotation.
         return gray
+
     angle = cv2.minAreaRect(coords)[-1]
     if angle < -45:
         angle = -(90 + angle)
     else:
         angle = -angle
+
+    # Skip rotation for negligible angles to avoid interpolation artefacts.
+    if abs(angle) < 0.1:
+        return gray
 
     (h, w) = gray.shape[:2]
     center = (w // 2, h // 2)

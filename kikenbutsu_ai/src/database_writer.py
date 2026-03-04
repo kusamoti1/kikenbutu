@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS law_article_links (
 def connect_db(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
     return conn
 
@@ -82,18 +83,23 @@ def document_exists(conn: sqlite3.Connection, title: str, file_path: str) -> boo
 
 
 def insert_document(conn: sqlite3.Connection, title: str, year: int | None, source: str, file_path: str) -> int:
-    cur = conn.cursor()
-    cur.execute(
+    """Insert a document and return its id.
+
+    Uses INSERT OR IGNORE, then always SELECTs the id to avoid the
+    ``cursor.lastrowid`` pitfall where an ignored INSERT leaves
+    ``lastrowid`` pointing at a *previous* successful insert.
+    """
+    conn.execute(
         "INSERT OR IGNORE INTO documents (title, year, source, file_path) VALUES (?, ?, ?, ?)",
         (title, year, source, file_path),
     )
     conn.commit()
-    if cur.lastrowid and cur.lastrowid > 0:
-        return int(cur.lastrowid)
     row = conn.execute(
         "SELECT id FROM documents WHERE title = ? AND file_path = ?",
         (title, file_path),
     ).fetchone()
+    if row is None:
+        raise RuntimeError(f"Failed to retrieve document id for title={title!r}, file_path={file_path!r}")
     return int(row[0])
 
 
@@ -126,6 +132,8 @@ def ensure_standard(conn: sqlite3.Connection, equipment_id: int, name: str) -> i
 
 
 def insert_law_article_links(conn: sqlite3.Connection, standard_id: int, links: List[Tuple[str, str]]) -> None:
+    if not links:
+        return
     conn.executemany(
         "INSERT INTO law_article_links (standard_id, law_name, article_number) VALUES (?, ?, ?)",
         [(standard_id, law_name, article_number) for law_name, article_number in links],

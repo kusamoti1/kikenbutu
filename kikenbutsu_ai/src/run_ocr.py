@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from paddleocr import PaddleOCR
+
+logger = logging.getLogger(__name__)
 
 _ocr_instance: Optional[PaddleOCR] = None
 
@@ -29,7 +32,11 @@ def ocr_image(image_path: Path, confidence_threshold: float = 0.85) -> List[Dict
         if not page:
             continue
         for line in page:
-            bbox, (text, conf) = line
+            try:
+                bbox, (text, conf) = line
+            except (TypeError, ValueError) as exc:
+                logger.warning("Unexpected OCR line format in %s: %s – %s", image_path.name, line, exc)
+                continue
             rows.append(
                 {
                     "text": text,

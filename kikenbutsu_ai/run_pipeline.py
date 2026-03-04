@@ -15,7 +15,7 @@ from src.database_writer import (
 )
 from src.dictionary_corrector import apply_dictionary, load_dictionary
 from src.equipment_tree_builder import detect_equipment
-from src.era_tree_builder import detect_era
+from src.era_tree_builder import detect_eras
 from src.knowledge_graph_builder import build_knowledge_graph, save_graphml
 from src.law_article_linker import extract_law_article_links
 from src.notebooklm_exporter import export_markdown_by_equipment
@@ -30,11 +30,19 @@ DB_PATH = BASE_DIR / "database" / "kikenbutsu.db"
 DICT_PATH = BASE_DIR / "dictionary" / "ocr_dictionary.tsv"
 LOG_PATH = BASE_DIR / "logs" / "pipeline.log"
 
+_logger_configured = False
+
 
 def setup_logger() -> None:
+    """Configure logging once.  Safe to call multiple times."""
+    global _logger_configured
+    if _logger_configured:
+        return
+    _logger_configured = True
+
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
-        filename=LOG_PATH,
+        filename=str(LOG_PATH),
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
         encoding="utf-8",
@@ -65,88 +73,97 @@ def try_ocr_pipeline(pdf_path: Path) -> str:
         logging.warning("OCR libraries not available. Skipping OCR for %s", pdf_path.name)
         return ""
 
-    PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
-    images = pdf_to_images(pdf_path, PROCESSED_DIR)
-    all_text: list[str] = []
+    try:
+        PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+        images = pdf_to_images(pdf_path, PROCESSED_DIR)
+        all_text: list[str] = []
 
-    for img_path in images:
-        preprocessed = PROCESSED_DIR / f"pre_{img_path.name}"
-        preprocess_image(img_path, preprocessed)
-        ocr_rows = ocr_image(preprocessed)
-        page_lines = [row["text"] for row in ocr_rows]
-        all_text.append("\n".join(page_lines))
+        for img_path in images:
+            preprocessed = PROCESSED_DIR / f"pre_{img_path.name}"
+            preprocess_image(img_path, preprocessed)
+            ocr_rows = ocr_image(preprocessed)
+            page_lines = [row["text"] for row in ocr_rows]
+            all_text.append("\n".join(page_lines))
 
-    text = "\n\n".join(all_text)
+        text = "\n\n".join(all_text)
 
-    OCR_DIR.mkdir(parents=True, exist_ok=True)
-    (OCR_DIR / f"{pdf_path.stem}.txt").write_text(text, encoding="utf-8")
+        OCR_DIR.mkdir(parents=True, exist_ok=True)
+        (OCR_DIR / f"{pdf_path.stem}.txt").write_text(text, encoding="utf-8")
 
-    return text
+        return text
+    except Exception as exc:
+        logging.exception("OCR pipeline failed for %s: %s", pdf_path.name, exc)
+        return ""
 
 
 def main() -> None:
     setup_logger()
+
+    # Ensure the input directory exists (avoid FileNotFoundError from glob).
+    INPUT_DIR.mkdir(parents=True, exist_ok=True)
+
     conn = connect_db(DB_PATH)
-    dictionary = load_dictionary(DICT_PATH)
+    try:
+        dictionary = load_dictionary(DICT_PATH)
+        graph_records: list[dict] = []
 
-    graph_records = []
+        pdf_files = sorted(INPUT_DIR.glob("*.pdf"))
+        if not pdf_files:
+            logging.warning("No PDFs found under input_pdf/. Pipeline completed with no documents.")
+            print("WARNING: input_pdf/ にPDFがありません。PDFを配置してから再実行してください。")
 
-    pdf_files = sorted(INPUT_DIR.glob("*.pdf"))
-    if not pdf_files:
-        logging.warning("No PDFs found under input_pdf/. Pipeline completed with no documents.")
-        print("WARNING: input_pdf/ にPDFがありません。PDFを配置してから再実行してください。")
+        for pdf_path in pdf_files:
+            try:
+                source = "消防法令資料"
+                title = pdf_path.stem
+                year = None
+                file_path_str = str(pdf_path)
 
-    for pdf_path in pdf_files:
-        try:
-            source = "消防法令資料"
-            title = pdf_path.stem
-            year = None
-            file_path_str = str(pdf_path)
+                if document_exists(conn, title, file_path_str):
+                    logging.info("Skipping duplicate: %s", pdf_path.name)
+                    continue
 
-            if document_exists(conn, title, file_path_str):
-                logging.info("Skipping duplicate: %s", pdf_path.name)
+                document_id = insert_document(conn, title=title, year=year, source=source, file_path=file_path_str)
+
+                text = load_ocr_text(pdf_path.stem)
+                if not text:
+                    text = try_ocr_pipeline(pdf_path)
+                if not text:
+                    logging.warning("No OCR text available for %s. Skipping.", pdf_path.name)
+                    continue
+
+                text = convert_old_kanji(apply_dictionary(text, dictionary))
+                paragraphs = split_paragraphs(text)
+
+                insert_paragraphs(conn, document_id, [(p, 1.0) for p in paragraphs])
+
+                equipment_names = set(detect_equipment(text))
+                law_links = extract_law_article_links(text)
+
+                for equipment in equipment_names or {"共通法令"}:
+                    eq_id = ensure_equipment(conn, equipment)
+                    std_id = ensure_standard(conn, eq_id, title)
+                    if law_links:
+                        insert_law_article_links(conn, std_id, law_links)
+
+                    eras = detect_eras(text)
+                    for era in eras:
+                        graph_records.append(
+                            {
+                                "equipment": equipment,
+                                "standard": title,
+                                "notification": title,
+                                "article": ", ".join([f"{n} {a}" for n, a in law_links]) or "条文リンクなし",
+                                "era": era,
+                            }
+                        )
+
+                logging.info("Processed %s (%d paragraphs)", pdf_path.name, len(paragraphs))
+            except Exception as exc:
+                logging.exception("Failed to process %s: %s", pdf_path.name, exc)
                 continue
-
-            document_id = insert_document(conn, title=title, year=year, source=source, file_path=file_path_str)
-
-            text = load_ocr_text(pdf_path.stem)
-            if not text:
-                text = try_ocr_pipeline(pdf_path)
-            if not text:
-                logging.warning("No OCR text available for %s. Skipping.", pdf_path.name)
-                continue
-
-            text = convert_old_kanji(apply_dictionary(text, dictionary))
-            paragraphs = split_paragraphs(text)
-
-            insert_paragraphs(conn, document_id, [(p, 1.0) for p in paragraphs])
-
-            equipment_names = set(detect_equipment(text))
-            law_links = extract_law_article_links(text)
-
-            for equipment in equipment_names or {"共通法令"}:
-                eq_id = ensure_equipment(conn, equipment)
-                std_id = ensure_standard(conn, eq_id, title)
-                if law_links:
-                    insert_law_article_links(conn, std_id, law_links)
-
-                era = detect_era(text)
-                graph_records.append(
-                    {
-                        "equipment": equipment,
-                        "standard": title,
-                        "notification": title,
-                        "article": ", ".join([f"{n} {a}" for n, a in law_links]) or "条文リンクなし",
-                        "era": era,
-                    }
-                )
-
-            logging.info("Processed %s (%d paragraphs)", pdf_path.name, len(paragraphs))
-        except Exception as exc:
-            logging.exception("Failed to process %s: %s", pdf_path.name, exc)
-            continue
-
-    conn.close()
+    finally:
+        conn.close()
 
     graph = build_knowledge_graph(graph_records)
     save_graphml(graph, BASE_DIR / "database" / "knowledge_graph.graphml")
