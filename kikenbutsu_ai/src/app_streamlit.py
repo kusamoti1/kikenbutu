@@ -59,12 +59,13 @@ with tab1:
 with tab2:
     era = st.selectbox("年代", ["昭和", "平成", "令和"])
     if st.button("年代で検索", key="era_search"):
-        results = engine.search(era, k=20)
-        found = [r for r in results if era in r["text"]]
+        results = engine.search(era, k=50)
+        found = [r for r in results if era in r.get("text", "")]
         if not found:
             st.info(f"「{era}」を含む通知が見つかりませんでした。")
         for r in found:
-            st.write(f"- {r['title']} | {r['text'][:80]}...")
+            text_preview = r.get("text", "")[:80]
+            st.write(f"- {r['title']} | {text_preview}...")
 
 with tab3:
     st.info("差分検索は law_diff テーブルを参照してください。run_pipeline.py 実行後に拡張可能です。")
