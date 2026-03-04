@@ -9,13 +9,15 @@ logger = logging.getLogger(__name__)
 
 
 class SearchEngine:
-    """Full-text search engine using SQLite FTS5."""
+    """Full-text search engine using SQLite FTS5.
+
+    The FTS5 index now includes the ``context`` column so that
+    Contextual Retrieval metadata (equipment, era, heading) is
+    searchable alongside the original paragraph text.
+    """
 
     def __init__(self, db_path: Path):
         self.db_path = db_path
-        # check_same_thread=False is required because Streamlit's
-        # @st.cache_resource may create the object in one thread and
-        # reuse it from another.
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self._ensure_fts()
 
@@ -27,6 +29,7 @@ class SearchEngine:
                 CREATE VIRTUAL TABLE IF NOT EXISTS paragraphs_fts USING fts5(
                     paragraph_id UNINDEXED,
                     title,
+                    context,
                     text,
                     confidence UNINDEXED,
                     tokenize='unicode61'
@@ -35,7 +38,6 @@ class SearchEngine:
             )
             self.conn.commit()
         except sqlite3.OperationalError:
-            # FTS5 extension may not be available in all SQLite builds.
             logger.warning("FTS5 is not available. Falling back to LIKE search only.")
 
     def rebuild_index(self) -> None:
@@ -43,13 +45,12 @@ class SearchEngine:
         try:
             self.conn.execute("SELECT 1 FROM paragraphs_fts LIMIT 1")
         except sqlite3.OperationalError:
-            # FTS table does not exist – nothing to rebuild.
             return
 
         self.conn.execute("DELETE FROM paragraphs_fts")
 
         rows = self.conn.execute(
-            "SELECT p.id, d.title, p.text, p.confidence "
+            "SELECT p.id, d.title, COALESCE(p.context, ''), p.text, p.confidence "
             "FROM paragraphs p JOIN documents d ON p.document_id = d.id"
         ).fetchall()
 
@@ -58,29 +59,32 @@ class SearchEngine:
             return
 
         self.conn.executemany(
-            "INSERT INTO paragraphs_fts (paragraph_id, title, text, confidence) VALUES (?, ?, ?, ?)",
+            "INSERT INTO paragraphs_fts (paragraph_id, title, context, text, confidence) "
+            "VALUES (?, ?, ?, ?, ?)",
             rows,
         )
         self.conn.commit()
 
     def search(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
-        """Search paragraphs using FTS5 MATCH with LIKE fallback."""
+        """Search paragraphs using FTS5 MATCH with LIKE fallback.
+
+        The FTS5 index covers title, context, and text — so a query
+        for an equipment name will match both the context tag and any
+        mention in the body text.
+        """
         if not query or not query.strip():
             return []
 
         safe_query = query.strip().replace('"', '""')
-
-        # Reject queries that would become empty after escaping
         if not safe_query:
             return []
 
         rows: list[tuple] = []
 
-        # Try FTS5 first
         try:
             rows = self.conn.execute(
                 """
-                SELECT paragraph_id, title, text, confidence
+                SELECT paragraph_id, title, context, text, confidence
                 FROM paragraphs_fts
                 WHERE paragraphs_fts MATCH ?
                 ORDER BY rank
@@ -92,26 +96,31 @@ class SearchEngine:
             logger.debug("FTS5 search failed (%s), falling back to LIKE", exc)
             rows = []
 
-        # Fallback to LIKE if FTS5 returned nothing or failed
         if not rows:
             try:
                 rows = self.conn.execute(
                     """
-                    SELECT p.id, d.title, p.text, p.confidence
+                    SELECT p.id, d.title, COALESCE(p.context, ''), p.text, p.confidence
                     FROM paragraphs p
                     JOIN documents d ON p.document_id = d.id
-                    WHERE p.text LIKE ? OR d.title LIKE ?
+                    WHERE p.text LIKE ? OR d.title LIKE ? OR p.context LIKE ?
                     ORDER BY p.id
                     LIMIT ?
                     """,
-                    (f"%{safe_query}%", f"%{safe_query}%", k),
+                    (f"%{safe_query}%", f"%{safe_query}%", f"%{safe_query}%", k),
                 ).fetchall()
             except sqlite3.OperationalError as exc:
                 logger.error("LIKE search also failed: %s", exc)
                 return []
 
         return [
-            {"paragraph_id": r[0], "title": r[1], "text": r[2], "confidence": r[3]}
+            {
+                "paragraph_id": r[0],
+                "title": r[1],
+                "context": r[2],
+                "text": r[3],
+                "confidence": r[4],
+            }
             for r in rows
         ]
 
