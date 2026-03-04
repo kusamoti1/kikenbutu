@@ -166,8 +166,12 @@ def main() -> None:
         conn.close()
 
     graph = build_knowledge_graph(graph_records)
-    save_graphml(graph, BASE_DIR / "database" / "knowledge_graph.graphml")
-    export_markdown_by_equipment(DB_PATH, BASE_DIR / "notebooklm_export")
+    graphml_path = BASE_DIR / "database" / "knowledge_graph.graphml"
+    save_graphml(graph, graphml_path)
+
+    # Pass the graph to the exporter so it can use deterministic
+    # traversal for content collection and traceability logging.
+    export_markdown_by_equipment(DB_PATH, BASE_DIR / "notebooklm_export", graph=graph)
 
     log_dir = BASE_DIR / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
