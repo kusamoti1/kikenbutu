@@ -14,16 +14,22 @@ def build_knowledge_graph(records: list[dict]) -> nx.DiGraph:
         art = rec.get("article", "不明条文")
         era = rec.get("era", "不明年代")
 
-        g.add_node(eq, type="Equipment")
-        g.add_node(std, type="Standard")
-        g.add_node(ntc, type="Notification")
-        g.add_node(art, type="LawArticle")
-        g.add_node(era, type="Era")
+        eq_id = f"Equipment:{eq}"
+        std_id = f"Standard:{std}"
+        ntc_id = f"Notification:{ntc}"
+        art_id = f"LawArticle:{art}"
+        era_id = f"Era:{era}"
 
-        g.add_edge(eq, std, relation="Equipment→Standard")
-        g.add_edge(std, ntc, relation="Standard→Notification")
-        g.add_edge(ntc, art, relation="Notification→LawArticle")
-        g.add_edge(ntc, era, relation="Notification→Era")
+        g.add_node(eq_id, type="Equipment", label=eq)
+        g.add_node(std_id, type="Standard", label=std)
+        g.add_node(ntc_id, type="Notification", label=ntc)
+        g.add_node(art_id, type="LawArticle", label=art)
+        g.add_node(era_id, type="Era", label=era)
+
+        g.add_edge(eq_id, std_id, relation="has_standard")
+        g.add_edge(std_id, ntc_id, relation="has_notification")
+        g.add_edge(ntc_id, art_id, relation="references_article")
+        g.add_edge(ntc_id, era_id, relation="belongs_to_era")
     return g
 
 
