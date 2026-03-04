@@ -4,14 +4,15 @@ import json
 import logging
 from pathlib import Path
 
+from src.contextual_chunk_builder import build_contextual_chunks
 from src.database_writer import (
     connect_db,
     document_exists,
     ensure_equipment,
     ensure_standard,
+    insert_contextual_paragraphs,
     insert_document,
     insert_law_article_links,
-    insert_paragraphs,
 )
 from src.dictionary_corrector import apply_dictionary, load_dictionary
 from src.equipment_tree_builder import detect_equipment
@@ -135,18 +136,30 @@ def main() -> None:
                 text = convert_old_kanji(apply_dictionary(text, dictionary))
                 paragraphs = split_paragraphs(text)
 
-                insert_paragraphs(conn, document_id, [(p, 1.0) for p in paragraphs])
-
-                equipment_names = set(detect_equipment(text))
+                equipment_names = list(set(detect_equipment(text)))
                 law_links = extract_law_article_links(text)
+                eras = detect_eras(text)
 
-                for equipment in equipment_names or {"共通法令"}:
+                # Build context-enriched chunks (Contextual Retrieval).
+                chunks = build_contextual_chunks(
+                    paragraphs=paragraphs,
+                    doc_title=title,
+                    equipment=equipment_names if equipment_names else ["共通法令"],
+                    eras=eras,
+                    law_refs=law_links,
+                )
+
+                insert_contextual_paragraphs(
+                    conn, document_id,
+                    [(c.text, c.context, 1.0) for c in chunks],
+                )
+
+                for equipment in equipment_names or ["共通法令"]:
                     eq_id = ensure_equipment(conn, equipment)
                     std_id = ensure_standard(conn, eq_id, title)
                     if law_links:
                         insert_law_article_links(conn, std_id, law_links)
 
-                    eras = detect_eras(text)
                     for era in eras:
                         graph_records.append(
                             {
@@ -158,7 +171,7 @@ def main() -> None:
                             }
                         )
 
-                logging.info("Processed %s (%d paragraphs)", pdf_path.name, len(paragraphs))
+                logging.info("Processed %s (%d chunks, contextual)", pdf_path.name, len(chunks))
             except Exception as exc:
                 logging.exception("Failed to process %s: %s", pdf_path.name, exc)
                 continue

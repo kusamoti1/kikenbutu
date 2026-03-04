@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS paragraphs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     document_id INTEGER,
     text TEXT,
+    context TEXT DEFAULT '',
     confidence REAL,
     FOREIGN KEY(document_id) REFERENCES documents(id)
 );
@@ -107,6 +108,19 @@ def insert_paragraphs(conn: sqlite3.Connection, document_id: int, rows: Iterable
     conn.executemany(
         "INSERT INTO paragraphs (document_id, text, confidence) VALUES (?, ?, ?)",
         [(document_id, text, confidence) for text, confidence in rows],
+    )
+    conn.commit()
+
+
+def insert_contextual_paragraphs(
+    conn: sqlite3.Connection,
+    document_id: int,
+    rows: Iterable[Tuple[str, str, float]],
+) -> None:
+    """Insert paragraphs with their context prefix."""
+    conn.executemany(
+        "INSERT INTO paragraphs (document_id, text, context, confidence) VALUES (?, ?, ?, ?)",
+        [(document_id, text, context, confidence) for text, context, confidence in rows],
     )
     conn.commit()
 

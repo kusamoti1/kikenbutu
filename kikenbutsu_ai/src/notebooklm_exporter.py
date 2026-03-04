@@ -129,12 +129,12 @@ def _export_with_graph(
                     # Record which eras are linked.
                     pass  # Used implicitly by paragraph classification below.
 
-    # Fetch paragraphs from DB (exact match by standard/document name).
+    # Fetch paragraphs from DB with context (exact match by standard/document name).
     if standard_names:
         placeholders = ", ".join(["?"] * len(standard_names))
         paragraphs = conn.execute(
             f"""
-            SELECT p.text FROM paragraphs p
+            SELECT p.text, COALESCE(p.context, '') FROM paragraphs p
             JOIN documents d ON p.document_id = d.id
             WHERE d.title IN ({placeholders})
             ORDER BY d.title, p.id
@@ -144,10 +144,15 @@ def _export_with_graph(
     else:
         paragraphs = []
 
-    for (text,) in paragraphs:
-        section_content["原文"].append(f"> {text}")
+    for text, context in paragraphs:
+        # Use contextualized text in the export so NotebookLM
+        # understands what each chunk is about.
+        if context:
+            section_content["原文"].append(f"> {context}\n> {text}")
+        else:
+            section_content["原文"].append(f"> {text}")
         for era_key, section_name in ERA_SECTION_MAP.items():
-            if era_key in text:
+            if era_key in text or era_key in context:
                 section_content[section_name].append(f"- {text[:200]}")
 
     # Build concise summary.
@@ -155,14 +160,14 @@ def _export_with_graph(
     summary_lines = [f"- 通知段落数: {total}件"]
     if standard_names:
         summary_lines.append(f"- 関連基準数: {len(standard_names)}件")
-    for (text,) in paragraphs[:_MAX_SUMMARY_ITEMS]:
+    for text, _ctx in paragraphs[:_MAX_SUMMARY_ITEMS]:
         summary_lines.append(f"- {text[:120]}")
     if total > _MAX_SUMMARY_ITEMS:
         summary_lines.append(f"- （他 {total - _MAX_SUMMARY_ITEMS} 件省略）")
     section_content["概要"] = summary_lines
 
     # Traversal log section (traceability).
-    section_content["巡回経路"] = [f"```", *traversal_log, "```"]
+    section_content["巡回経路"] = ["```", *traversal_log, "```"]
 
     _write_markdown(output_dir, equipment_name, section_content)
 
@@ -198,7 +203,7 @@ def _export_sql_only(
 
     paragraphs = conn.execute(
         """
-        SELECT p.text FROM paragraphs p
+        SELECT p.text, COALESCE(p.context, '') FROM paragraphs p
         JOIN documents d ON p.document_id = d.id
         JOIN standards s ON s.name = d.title
         WHERE s.equipment_id = ?
@@ -207,17 +212,20 @@ def _export_sql_only(
         (equipment_id,),
     ).fetchall()
 
-    for (text,) in paragraphs:
-        section_content["原文"].append(f"> {text}")
+    for text, context in paragraphs:
+        if context:
+            section_content["原文"].append(f"> {context}\n> {text}")
+        else:
+            section_content["原文"].append(f"> {text}")
         for era_key, section_name in ERA_SECTION_MAP.items():
-            if era_key in text:
+            if era_key in text or era_key in context:
                 section_content[section_name].append(f"- {text[:200]}")
 
     total = len(paragraphs)
     summary_lines = [f"- 通知段落数: {total}件"]
     if standards:
         summary_lines.append(f"- 関連基準数: {len(standards)}件")
-    for (text,) in paragraphs[:_MAX_SUMMARY_ITEMS]:
+    for text, _ctx in paragraphs[:_MAX_SUMMARY_ITEMS]:
         summary_lines.append(f"- {text[:120]}")
     if total > _MAX_SUMMARY_ITEMS:
         summary_lines.append(f"- （他 {total - _MAX_SUMMARY_ITEMS} 件省略）")
