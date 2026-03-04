@@ -1,24 +1,41 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+
+# Ensure the src directory is on sys.path so sibling module imports work
+# regardless of how Streamlit is launched.
+_SRC_DIR = Path(__file__).resolve().parent
+_PROJECT_DIR = _SRC_DIR.parent
+if str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
+if str(_PROJECT_DIR) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_DIR))
 
 import streamlit as st
 
 from inspection_ai import list_required_standards
 from search_engine import SearchEngine
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = _PROJECT_DIR
 DB_PATH = BASE_DIR / "database" / "kikenbutsu.db"
 
-st.set_page_config(page_title="危険物法令ナレッジグラフAI", layout="wide")
+st.set_page_config(page_title="危険物法令ナレッジグラフAI", layout="centered")
 st.title("危険物法令ナレッジグラフAI")
 
 if not DB_PATH.exists():
     st.warning("database/kikenbutsu.db が見つかりません。先に run_pipeline.py を実行してください。")
     st.stop()
 
-engine = SearchEngine(DB_PATH)
-engine.rebuild_index()
+
+@st.cache_resource
+def get_engine() -> SearchEngine:
+    engine = SearchEngine(DB_PATH)
+    engine.rebuild_index()
+    return engine
+
+
+engine = get_engine()
 
 tab1, tab2, tab3, tab4 = st.tabs(["設備検索", "年代検索", "差分検索", "査察AI"])
 
@@ -26,6 +43,8 @@ with tab1:
     q = st.text_input("設備・通知・条文キーワード")
     if st.button("検索", key="search") and q:
         results = engine.search(q, k=10)
+        if not results:
+            st.info("該当する通知が見つかりませんでした。")
         for r in results:
             st.markdown("---")
             st.write("### 結論")
@@ -38,10 +57,13 @@ with tab1:
             st.write(r["text"])
 
 with tab2:
-    era = st.selectbox("年代", ["昭和", "平成", "令和", "不明"])
-    results = engine.search(era, k=10)
-    for r in results:
-        if era in r["text"]:
+    era = st.selectbox("年代", ["昭和", "平成", "令和"])
+    if st.button("年代で検索", key="era_search"):
+        results = engine.search(era, k=20)
+        found = [r for r in results if era in r["text"]]
+        if not found:
+            st.info(f"「{era}」を含む通知が見つかりませんでした。")
+        for r in found:
             st.write(f"- {r['title']} | {r['text'][:80]}...")
 
 with tab3:

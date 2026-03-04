@@ -4,41 +4,84 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List
 
-import faiss
-import numpy as np
-
 
 class SearchEngine:
-    def __init__(self, db_path: Path):
-        self.conn = sqlite3.connect(db_path)
-        self.index = faiss.IndexFlatL2(1)
-        self._cache: List[Dict[str, Any]] = []
+    """Full-text search engine using SQLite FTS5."""
 
-    def _embed(self, text: str) -> np.ndarray:
-        val = float(sum(ord(c) for c in text) % 100000)
-        return np.array([[val]], dtype="float32")
+    def __init__(self, db_path: Path):
+        self.db_path = db_path
+        self.conn = sqlite3.connect(db_path)
+        self._ensure_fts()
+
+    def _ensure_fts(self) -> None:
+        """Create FTS5 virtual table if it does not exist."""
+        self.conn.execute(
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS paragraphs_fts USING fts5(
+                paragraph_id UNINDEXED,
+                title,
+                text,
+                confidence UNINDEXED,
+                tokenize='unicode61'
+            )
+            """
+        )
+        self.conn.commit()
 
     def rebuild_index(self) -> None:
-        self._cache.clear()
-        self.index.reset()
+        """Rebuild the FTS5 index from the paragraphs table."""
+        self.conn.execute("DELETE FROM paragraphs_fts")
 
         rows = self.conn.execute(
-            "SELECT p.id, d.title, p.text, p.confidence FROM paragraphs p JOIN documents d ON p.document_id=d.id"
+            "SELECT p.id, d.title, p.text, p.confidence "
+            "FROM paragraphs p JOIN documents d ON p.document_id = d.id"
         ).fetchall()
 
         if not rows:
+            self.conn.commit()
             return
 
-        vectors = []
-        for pid, title, text, conf in rows:
-            self._cache.append({"paragraph_id": pid, "title": title, "text": text, "confidence": conf})
-            vectors.append(self._embed(text)[0])
-
-        self.index.add(np.array(vectors, dtype="float32"))
+        self.conn.executemany(
+            "INSERT INTO paragraphs_fts (paragraph_id, title, text, confidence) VALUES (?, ?, ?, ?)",
+            rows,
+        )
+        self.conn.commit()
 
     def search(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
-        if self.index.ntotal == 0:
+        """Search paragraphs using FTS5 MATCH with LIKE fallback."""
+        if not query or not query.strip():
             return []
-        qv = self._embed(query)
-        _, idx = self.index.search(qv, k)
-        return [self._cache[i] for i in idx[0] if i < len(self._cache)]
+
+        safe_query = query.strip().replace('"', '""')
+
+        try:
+            rows = self.conn.execute(
+                """
+                SELECT paragraph_id, title, text, confidence
+                FROM paragraphs_fts
+                WHERE paragraphs_fts MATCH ?
+                ORDER BY rank
+                LIMIT ?
+                """,
+                (f'"{safe_query}"', k),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            rows = self.conn.execute(
+                """
+                SELECT p.id, d.title, p.text, p.confidence
+                FROM paragraphs p
+                JOIN documents d ON p.document_id = d.id
+                WHERE p.text LIKE ?
+                ORDER BY p.id
+                LIMIT ?
+                """,
+                (f"%{safe_query}%", k),
+            ).fetchall()
+
+        return [
+            {"paragraph_id": r[0], "title": r[1], "text": r[2], "confidence": r[3]}
+            for r in rows
+        ]
+
+    def close(self) -> None:
+        self.conn.close()
