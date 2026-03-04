@@ -1,0 +1,9 @@
+pdf2image
+opencv-python
+paddleocr
+pillow
+numpy
+pandas
+faiss-cpu
+networkx
+streamlit
