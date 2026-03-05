@@ -43,6 +43,11 @@ ERA_SECTION_MAP = {
 _MAX_SUMMARY_ITEMS = 30
 
 
+def _escape_like(s: str) -> str:
+    """Escape SQL LIKE wildcard characters ``%`` and ``_``."""
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def export_markdown_by_equipment(
     db_path: Path,
     output_dir: Path,
@@ -204,17 +209,24 @@ def _export_sql_only(
     # Fetch paragraphs by standard name matching document title, or
     # by context containing the equipment name (fallback for documents
     # whose title does not exactly match the standard name).
+    # Use DISTINCT to prevent duplicates when both conditions match.
+    eq_name_row = conn.execute(
+        "SELECT name FROM equipment WHERE id = ?", (equipment_id,)
+    ).fetchone()
+    _eq_like = _escape_like(eq_name_row[0]) if eq_name_row else ""
     paragraphs = conn.execute(
         """
-        SELECT p.text, COALESCE(p.context, '') FROM paragraphs p
+        SELECT DISTINCT p.id, p.text, COALESCE(p.context, '') FROM paragraphs p
         JOIN documents d ON p.document_id = d.id
         LEFT JOIN standards s ON s.name = d.title AND s.equipment_id = ?
         WHERE s.id IS NOT NULL
-           OR p.context LIKE '%' || (SELECT name FROM equipment WHERE id = ?) || '%'
+           OR p.context LIKE ? ESCAPE '\\'
         ORDER BY d.title, p.id
         """,
-        (equipment_id, equipment_id),
+        (equipment_id, f"%{_eq_like}%"),
     ).fetchall()
+    # Strip the p.id used for DISTINCT ordering.
+    paragraphs = [(row[1], row[2]) for row in paragraphs]
 
     for text, context in paragraphs:
         if context:

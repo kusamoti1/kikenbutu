@@ -163,8 +163,12 @@ def build_contextual_chunks(
 
     The original text is NEVER modified — only prefixed.
     """
-    from src.equipment_tree_builder import detect_equipment as _detect_eq
-    from src.era_tree_builder import detect_eras as _detect_eras
+    try:
+        from src.equipment_tree_builder import detect_equipment as _detect_eq
+        from src.era_tree_builder import detect_eras as _detect_eras
+    except ImportError:
+        from equipment_tree_builder import detect_equipment as _detect_eq
+        from era_tree_builder import detect_eras as _detect_eras
 
     tracker = HeadingTracker()
     law_ref_strs = [f"{name} {art}" for name, art in law_refs]

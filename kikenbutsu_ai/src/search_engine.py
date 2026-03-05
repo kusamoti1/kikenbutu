@@ -58,29 +58,35 @@ class SearchEngine:
             logger.warning("FTS5 is not available. Falling back to LIKE search only.")
 
     def rebuild_index(self) -> None:
-        """Rebuild the FTS5 index from the paragraphs table."""
+        """Rebuild the FTS5 index from the paragraphs table.
+
+        The DELETE + INSERT is wrapped in a single transaction so that
+        a crash between the two operations does not leave an empty index.
+        """
         try:
             self.conn.execute("SELECT 1 FROM paragraphs_fts LIMIT 1")
         except sqlite3.OperationalError:
             return
-
-        self.conn.execute("DELETE FROM paragraphs_fts")
 
         rows = self.conn.execute(
             "SELECT p.id, d.title, COALESCE(p.context, ''), p.text, p.confidence "
             "FROM paragraphs p JOIN documents d ON p.document_id = d.id"
         ).fetchall()
 
-        if not rows:
-            self.conn.commit()
-            return
-
-        self.conn.executemany(
-            "INSERT INTO paragraphs_fts (paragraph_id, title, context, text, confidence) "
-            "VALUES (?, ?, ?, ?, ?)",
-            rows,
-        )
-        self.conn.commit()
+        # Wrap in explicit transaction for atomicity.
+        self.conn.execute("BEGIN")
+        try:
+            self.conn.execute("DELETE FROM paragraphs_fts")
+            if rows:
+                self.conn.executemany(
+                    "INSERT INTO paragraphs_fts (paragraph_id, title, context, text, confidence) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    rows,
+                )
+            self.conn.execute("COMMIT")
+        except Exception:
+            self.conn.execute("ROLLBACK")
+            raise
 
     def search(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
         """Search paragraphs using FTS5 MATCH with LIKE fallback.

@@ -83,7 +83,7 @@ def try_ocr_pipeline(pdf_path: Path) -> str:
             preprocessed = PROCESSED_DIR / f"pre_{img_path.name}"
             preprocess_image(img_path, preprocessed)
             ocr_rows = ocr_image(preprocessed)
-            page_lines = [row["text"] for row in ocr_rows]
+            page_lines = [str(row["text"]) for row in ocr_rows]
             all_text.append("\n".join(page_lines))
 
         text = "\n\n".join(all_text)
@@ -136,7 +136,9 @@ def main() -> None:
                 text = convert_old_kanji(apply_dictionary(text, dictionary))
                 paragraphs = split_paragraphs(text)
 
-                equipment_names = list(set(detect_equipment(text)))
+                # Use dict.fromkeys to deduplicate while preserving
+                # the longest-match-first order from detect_equipment.
+                equipment_names = list(dict.fromkeys(detect_equipment(text)))
                 law_links = extract_law_article_links(text)
                 eras = detect_eras(text)
 
@@ -149,6 +151,9 @@ def main() -> None:
                     law_refs=law_links,
                 )
 
+                # Use a default confidence of 1.0 for pre-processed OCR text
+                # loaded from file; the actual per-line confidence is not
+                # available at the paragraph level.
                 insert_contextual_paragraphs(
                     conn, document_id,
                     [(c.text, c.context, 1.0) for c in chunks],
@@ -160,16 +165,20 @@ def main() -> None:
                     if law_links:
                         insert_law_article_links(conn, std_id, law_links)
 
+                    # Create one graph record per (era, article) pair so that
+                    # each LawArticle gets its own node in the knowledge graph.
+                    article_labels = [f"{n} {a}" for n, a in law_links] if law_links else ["条文リンクなし"]
                     for era in eras:
-                        graph_records.append(
-                            {
-                                "equipment": equipment,
-                                "standard": title,
-                                "notification": title,
-                                "article": ", ".join([f"{n} {a}" for n, a in law_links]) or "条文リンクなし",
-                                "era": era,
-                            }
-                        )
+                        for art_label in article_labels:
+                            graph_records.append(
+                                {
+                                    "equipment": equipment,
+                                    "standard": title,
+                                    "notification": title,
+                                    "article": art_label,
+                                    "era": era,
+                                }
+                            )
 
                 logging.info("Processed %s (%d chunks, contextual)", pdf_path.name, len(chunks))
             except Exception as exc:

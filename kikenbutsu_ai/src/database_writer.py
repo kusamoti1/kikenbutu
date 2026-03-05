@@ -72,6 +72,8 @@ def connect_db(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA foreign_keys = ON")
+    # WAL mode allows concurrent reads (Streamlit) while pipeline writes.
+    conn.execute("PRAGMA journal_mode = WAL")
     conn.executescript(SCHEMA)
     return conn
 

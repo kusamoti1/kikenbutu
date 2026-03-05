@@ -85,6 +85,8 @@ class GraphSearchEngine:
     def __init__(self, graph: nx.DiGraph, db_path: Path):
         self.graph = graph
         self.db_path = db_path
+        # Reuse a single read-only connection for paragraph fetches.
+        self._conn = sqlite3.connect(db_path, check_same_thread=False)
         # Build lookup indices for fast node access.
         self._by_type: Dict[str, List[str]] = {}
         for node, data in graph.nodes(data=True):
@@ -301,25 +303,21 @@ class GraphSearchEngine:
         if not standard_names:
             return []
 
-        conn = sqlite3.connect(self.db_path)
-        try:
-            placeholders = ", ".join(["?"] * len(standard_names))
-            rows = conn.execute(
-                f"""
-                SELECT d.title, p.text, p.confidence, COALESCE(p.context, '')
-                FROM paragraphs p
-                JOIN documents d ON p.document_id = d.id
-                WHERE d.title IN ({placeholders})
-                ORDER BY d.title, p.id
-                """,
-                standard_names,
-            ).fetchall()
-            return [
-                {"title": r[0], "text": r[1], "confidence": r[2], "context": r[3]}
-                for r in rows
-            ]
-        finally:
-            conn.close()
+        placeholders = ", ".join(["?"] * len(standard_names))
+        rows = self._conn.execute(
+            f"""
+            SELECT d.title, p.text, p.confidence, COALESCE(p.context, '')
+            FROM paragraphs p
+            JOIN documents d ON p.document_id = d.id
+            WHERE d.title IN ({placeholders})
+            ORDER BY d.title, p.id
+            """,
+            standard_names,
+        ).fetchall()
+        return [
+            {"title": r[0], "text": r[1], "confidence": r[2], "context": r[3]}
+            for r in rows
+        ]
 
 
 # ---------------------------------------------------------------------------
