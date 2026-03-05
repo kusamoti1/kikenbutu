@@ -2,61 +2,85 @@
 chcp 65001 >nul 2>&1
 title 危険物法令ナレッジAI - 初期設定
 
-echo ============================================
-echo   危険物法令ナレッジグラフAI  初期設定
-echo ============================================
+echo.
+echo  ============================================
+echo    危険物法令ナレッジグラフAI  初期設定
+echo  ============================================
 echo.
 
-REM --- Python の存在確認 ---
+REM -------------------------------------------------------
+REM  Python の存在確認
+REM -------------------------------------------------------
 where python >nul 2>&1
 if %errorlevel% neq 0 (
-    echo [エラー] Python が見つかりません。
+    echo  [!] Python が見つかりません。
     echo.
-    echo Python のインストールが必要です。
-    echo 以下の手順に従ってください:
-    echo.
-    echo   1. https://www.python.org/downloads/ を開く
-    echo   2. 「Download Python」ボタンをクリック
-    echo   3. インストール時に「Add Python to PATH」に必ずチェック
-    echo   4. インストール完了後、もう一度このファイルを実行
+    echo      Python のインストールが必要です。
+    echo      詳しくは「使い方ガイド.txt」をお読みください。
     echo.
     pause
     exit /b 1
 )
 
-echo [1/3] Python が見つかりました。
-for /f "tokens=*" %%i in ('python --version 2^>^&1') do echo       %%i
+echo  [OK] Python を検出しました。
+for /f "tokens=*" %%i in ('python --version 2^>^&1') do echo        %%i
 echo.
 
-echo [2/3] 必要なライブラリをインストールしています...
-echo       （初回は数分かかることがあります）
+REM -------------------------------------------------------
+REM  ライブラリのインストール（既に入っていればスキップ）
+REM -------------------------------------------------------
+echo  ライブラリを確認しています...
 echo.
-python -m pip install --upgrade pip >nul 2>&1
-python -m pip install -r "%~dp0requirements.txt"
-if %errorlevel% neq 0 (
+
+REM 主要ライブラリが入っているかチェック
+python -c "import streamlit; import networkx" >nul 2>&1
+if %errorlevel% equ 0 (
+    echo  [OK] 主要ライブラリはインストール済みです。
+    echo       （スキップします）
+) else (
+    echo  ライブラリをインストールしています...
+    echo  （インターネット接続が必要です。数分お待ちください）
     echo.
-    echo [エラー] ライブラリのインストールに失敗しました。
-    echo インターネット接続を確認してください。
-    pause
-    exit /b 1
+    python -m pip install --upgrade pip >nul 2>&1
+    python -m pip install -r "%~dp0requirements.txt"
+    if %errorlevel% neq 0 (
+        echo.
+        echo  [!] インストール中にエラーが発生しました。
+        echo      インターネット接続を確認してください。
+        echo.
+        pause
+        exit /b 1
+    )
+    echo.
+    echo  [OK] ライブラリのインストールが完了しました。
 )
 echo.
 
-echo [3/3] フォルダを準備しています...
-if not exist "%~dp0input_pdf" mkdir "%~dp0input_pdf"
-if not exist "%~dp0database" mkdir "%~dp0database"
-if not exist "%~dp0logs" mkdir "%~dp0logs"
-if not exist "%~dp0ocr_text" mkdir "%~dp0ocr_text"
-if not exist "%~dp0notebooklm_export" mkdir "%~dp0notebooklm_export"
+REM -------------------------------------------------------
+REM  フォルダの自動作成
+REM -------------------------------------------------------
+echo  フォルダを準備しています...
+if not exist "%~dp0input_pdf"          mkdir "%~dp0input_pdf"
+if not exist "%~dp0database"           mkdir "%~dp0database"
+if not exist "%~dp0logs"               mkdir "%~dp0logs"
+if not exist "%~dp0ocr_text"           mkdir "%~dp0ocr_text"
+if not exist "%~dp0notebooklm_export"  mkdir "%~dp0notebooklm_export"
+echo  [OK] フォルダの準備が完了しました。
+echo.
 
+echo  ============================================
+echo    初期設定が完了しました
+echo  ============================================
 echo.
-echo ============================================
-echo   初期設定が完了しました！
-echo ============================================
+echo  次にやること:
+echo    1. 今から開く「input_pdf」フォルダに、
+echo       読み込みたいPDFファイルを入れてください。
 echo.
-echo 次の手順:
-echo   1. 「input_pdf」フォルダにPDFファイルを入れる
-echo   2. 「②データ取込」をダブルクリック
-echo   3. 「③アプリ起動」をダブルクリック
+echo    2. PDFを入れたら「②データ取込」を
+echo       ダブルクリックしてください。
 echo.
+
+REM input_pdf フォルダを自動で開く
+explorer "%~dp0input_pdf"
+
 pause
