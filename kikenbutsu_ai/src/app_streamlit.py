@@ -125,7 +125,7 @@ with tab1:
                 for r in fts_results:
                     st.markdown("---")
                     st.write(f"### {r['title']}")
-                    st.write(r["text"])
+                    st.text(r["text"])
             else:
                 st.info("該当する通知が見つかりませんでした。")
 
@@ -155,7 +155,7 @@ with tab2:
                 st.info("グラフに該当ノードがないため、全文検索で結果を表示します。")
                 for r in fts_found:
                     text_preview = r.get("text", "")[:80]
-                    st.write(f"- {r['title']} | {text_preview}...")
+                    st.text(f"{r['title']} | {text_preview}")
             else:
                 st.info(f"「{era}」を含む通知が見つかりませんでした。")
 

@@ -148,6 +148,25 @@ def ensure_standard(conn: sqlite3.Connection, equipment_id: int, name: str) -> i
     return int(row[0])
 
 
+def ensure_era(conn: sqlite3.Connection, name: str) -> int:
+    """Insert an era if it doesn't exist and return its id."""
+    conn.execute("INSERT OR IGNORE INTO eras (name) VALUES (?)", (name,))
+    conn.commit()
+    row = conn.execute("SELECT id FROM eras WHERE name = ?", (name,)).fetchone()
+    return int(row[0])
+
+
+def insert_revision_reasons(conn: sqlite3.Connection, standard_id: int, reasons: List[str]) -> None:
+    """Insert extracted revision reasons for a standard."""
+    if not reasons:
+        return
+    conn.executemany(
+        "INSERT INTO revision_reason (standard_id, reason) VALUES (?, ?)",
+        [(standard_id, reason) for reason in reasons],
+    )
+    conn.commit()
+
+
 def insert_law_article_links(conn: sqlite3.Connection, standard_id: int, links: List[Tuple[str, str]]) -> None:
     if not links:
         return

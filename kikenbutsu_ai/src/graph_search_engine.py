@@ -93,6 +93,10 @@ class GraphSearchEngine:
             node_type = data.get("type", "Unknown")
             self._by_type.setdefault(node_type, []).append(node)
 
+    def close(self) -> None:
+        """Close the underlying DB connection."""
+        self._conn.close()
+
     # ---------------------------------------------------------------
     # Public search methods
     # ---------------------------------------------------------------
@@ -271,8 +275,10 @@ class GraphSearchEngine:
                     results.append(r)
                     seen_equipment.add(r.equipment)
 
-        # 4. Scan all equipment nodes for partial match
-        if not results:
+        # 4. Scan all equipment nodes for partial match.
+        #    Require at least 2 characters to avoid matching everything
+        #    with single-character queries like "所" or "器".
+        if not results and len(query) >= 2:
             for eq_node in self._by_type.get("Equipment", []):
                 eq_label = self.graph.nodes[eq_node].get("label", "")
                 if query in eq_label or eq_label in query:
@@ -288,7 +294,12 @@ class GraphSearchEngine:
     # ---------------------------------------------------------------
 
     def _find_node_containing(self, text: str, node_type: str) -> Optional[str]:
-        """Find a node whose label contains *text* (deterministic scan)."""
+        """Find a node whose label contains *text* (deterministic scan).
+
+        Requires at least 2 characters to avoid overly broad partial matches.
+        """
+        if len(text) < 2:
+            return None
         for node in self._by_type.get(node_type, []):
             label = self.graph.nodes[node].get("label", "")
             if text in label or label in text:
