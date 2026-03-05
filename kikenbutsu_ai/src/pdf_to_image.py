@@ -21,7 +21,7 @@ def pdf_to_images(pdf_path: Path, output_dir: Path, dpi: int = 400) -> List[Path
     try:
         from pdf2image import pdfinfo_from_path
         info = pdfinfo_from_path(str(pdf_path))
-        total_pages = info.get("Pages", 0)
+        total_pages = int(info.get("Pages", 0))
     except Exception:
         # If pdfinfo is not available, fall back to converting all at once.
         total_pages = 0

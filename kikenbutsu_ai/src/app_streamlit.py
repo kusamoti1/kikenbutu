@@ -17,7 +17,6 @@ import streamlit as st
 from graph_search_engine import (
     GraphSearchEngine,
     TraversalResult,
-    format_result_as_guarded_answer,
     load_graph,
 )
 from inspection_ai import list_required_standards
@@ -35,23 +34,33 @@ if not DB_PATH.exists():
     st.stop()
 
 
+def _db_mtime() -> float:
+    """Return DB file modification time for cache invalidation."""
+    try:
+        return DB_PATH.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
 @st.cache_resource
-def get_fts_engine() -> SearchEngine:
+def get_fts_engine(_mtime: float) -> SearchEngine:
     engine = SearchEngine(DB_PATH)
     engine.rebuild_index()
     return engine
 
 
 @st.cache_resource
-def get_graph_engine() -> GraphSearchEngine | None:
+def get_graph_engine(_mtime: float) -> GraphSearchEngine | None:
     graph = load_graph(GRAPH_PATH)
     if graph is None:
         return None
     return GraphSearchEngine(graph, DB_PATH)
 
 
-fts_engine = get_fts_engine()
-graph_engine = get_graph_engine()
+# Pass DB mtime so caches are refreshed when the pipeline is re-run.
+_mtime = _db_mtime()
+fts_engine = get_fts_engine(_mtime)
+graph_engine = get_graph_engine(_mtime)
 
 tab1, tab2, tab3, tab4 = st.tabs(["設備検索", "年代検索", "差分検索", "査察AI"])
 
@@ -80,7 +89,9 @@ def _show_traversal_result(result: TraversalResult) -> None:
 
     st.write("**原文引用:**")
     for p in result.paragraphs[:5]:
-        st.markdown(f"> {p['text'][:400]}")
+        # Use st.text to avoid Markdown injection from raw OCR content
+        # (OCR text may contain #, *, > etc. that break st.markdown).
+        st.text(p["text"][:400])
     if len(result.paragraphs) > 5:
         st.caption(f"他 {len(result.paragraphs) - 5} 段落（省略）")
 

@@ -85,6 +85,8 @@ class GraphSearchEngine:
     def __init__(self, graph: nx.DiGraph, db_path: Path):
         self.graph = graph
         self.db_path = db_path
+        # Reuse a single read-only connection for paragraph fetches.
+        self._conn = sqlite3.connect(db_path, check_same_thread=False)
         # Build lookup indices for fast node access.
         self._by_type: Dict[str, List[str]] = {}
         for node, data in graph.nodes(data=True):
@@ -217,7 +219,13 @@ class GraphSearchEngine:
         equipment_names: Set[str] = set()
         for art_node in matching_articles:
             for ntc_node in self.graph.predecessors(art_node):
+                ntc_data = self.graph.nodes[ntc_node]
+                if ntc_data.get("type") != "Notification":
+                    continue
                 for std_node in self.graph.predecessors(ntc_node):
+                    std_data = self.graph.nodes[std_node]
+                    if std_data.get("type") != "Standard":
+                        continue
                     for eq_node in self.graph.predecessors(std_node):
                         eq_data = self.graph.nodes[eq_node]
                         if eq_data.get("type") == "Equipment":
@@ -295,25 +303,21 @@ class GraphSearchEngine:
         if not standard_names:
             return []
 
-        conn = sqlite3.connect(self.db_path)
-        try:
-            placeholders = ", ".join(["?"] * len(standard_names))
-            rows = conn.execute(
-                f"""
-                SELECT d.title, p.text, p.confidence
-                FROM paragraphs p
-                JOIN documents d ON p.document_id = d.id
-                WHERE d.title IN ({placeholders})
-                ORDER BY d.title, p.id
-                """,
-                standard_names,
-            ).fetchall()
-            return [
-                {"title": r[0], "text": r[1], "confidence": r[2]}
-                for r in rows
-            ]
-        finally:
-            conn.close()
+        placeholders = ", ".join(["?"] * len(standard_names))
+        rows = self._conn.execute(
+            f"""
+            SELECT d.title, p.text, p.confidence, COALESCE(p.context, '')
+            FROM paragraphs p
+            JOIN documents d ON p.document_id = d.id
+            WHERE d.title IN ({placeholders})
+            ORDER BY d.title, p.id
+            """,
+            standard_names,
+        ).fetchall()
+        return [
+            {"title": r[0], "text": r[1], "confidence": r[2], "context": r[3]}
+            for r in rows
+        ]
 
 
 # ---------------------------------------------------------------------------

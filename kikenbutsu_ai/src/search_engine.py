@@ -22,8 +22,25 @@ class SearchEngine:
         self._ensure_fts()
 
     def _ensure_fts(self) -> None:
-        """Create FTS5 virtual table if it does not exist."""
+        """Create FTS5 virtual table, recreating if schema has changed.
+
+        If an older database has a ``paragraphs_fts`` table without the
+        ``context`` column, ``CREATE VIRTUAL TABLE IF NOT EXISTS`` silently
+        keeps the old schema and subsequent INSERTs with 5 values fail.
+        We detect this by checking the column count and recreating if needed.
+        """
         try:
+            # Check whether the existing table has the expected columns.
+            try:
+                cur = self.conn.execute("PRAGMA table_info(paragraphs_fts)")
+                existing_cols = [row[1] for row in cur.fetchall()]
+                if existing_cols and "context" not in existing_cols:
+                    logger.info("FTS5 table schema outdated (missing 'context'). Recreating.")
+                    self.conn.execute("DROP TABLE IF EXISTS paragraphs_fts")
+                    self.conn.commit()
+            except sqlite3.OperationalError:
+                pass  # Table doesn't exist yet — will be created below.
+
             self.conn.execute(
                 """
                 CREATE VIRTUAL TABLE IF NOT EXISTS paragraphs_fts USING fts5(
@@ -41,29 +58,35 @@ class SearchEngine:
             logger.warning("FTS5 is not available. Falling back to LIKE search only.")
 
     def rebuild_index(self) -> None:
-        """Rebuild the FTS5 index from the paragraphs table."""
+        """Rebuild the FTS5 index from the paragraphs table.
+
+        The DELETE + INSERT is wrapped in a single transaction so that
+        a crash between the two operations does not leave an empty index.
+        """
         try:
             self.conn.execute("SELECT 1 FROM paragraphs_fts LIMIT 1")
         except sqlite3.OperationalError:
             return
-
-        self.conn.execute("DELETE FROM paragraphs_fts")
 
         rows = self.conn.execute(
             "SELECT p.id, d.title, COALESCE(p.context, ''), p.text, p.confidence "
             "FROM paragraphs p JOIN documents d ON p.document_id = d.id"
         ).fetchall()
 
-        if not rows:
-            self.conn.commit()
-            return
-
-        self.conn.executemany(
-            "INSERT INTO paragraphs_fts (paragraph_id, title, context, text, confidence) "
-            "VALUES (?, ?, ?, ?, ?)",
-            rows,
-        )
-        self.conn.commit()
+        # Wrap in explicit transaction for atomicity.
+        self.conn.execute("BEGIN")
+        try:
+            self.conn.execute("DELETE FROM paragraphs_fts")
+            if rows:
+                self.conn.executemany(
+                    "INSERT INTO paragraphs_fts (paragraph_id, title, context, text, confidence) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    rows,
+                )
+            self.conn.execute("COMMIT")
+        except Exception:
+            self.conn.execute("ROLLBACK")
+            raise
 
     def search(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
         """Search paragraphs using FTS5 MATCH with LIKE fallback.
