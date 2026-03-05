@@ -201,15 +201,19 @@ def _export_sql_only(
             if entry not in section_content["関係条文"]:
                 section_content["関係条文"].append(entry)
 
+    # Fetch paragraphs by standard name matching document title, or
+    # by context containing the equipment name (fallback for documents
+    # whose title does not exactly match the standard name).
     paragraphs = conn.execute(
         """
         SELECT p.text, COALESCE(p.context, '') FROM paragraphs p
         JOIN documents d ON p.document_id = d.id
-        JOIN standards s ON s.name = d.title
-        WHERE s.equipment_id = ?
+        LEFT JOIN standards s ON s.name = d.title AND s.equipment_id = ?
+        WHERE s.id IS NOT NULL
+           OR p.context LIKE '%' || (SELECT name FROM equipment WHERE id = ?) || '%'
         ORDER BY d.title, p.id
         """,
-        (equipment_id,),
+        (equipment_id, equipment_id),
     ).fetchall()
 
     for text, context in paragraphs:

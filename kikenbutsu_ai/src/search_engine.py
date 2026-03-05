@@ -22,8 +22,25 @@ class SearchEngine:
         self._ensure_fts()
 
     def _ensure_fts(self) -> None:
-        """Create FTS5 virtual table if it does not exist."""
+        """Create FTS5 virtual table, recreating if schema has changed.
+
+        If an older database has a ``paragraphs_fts`` table without the
+        ``context`` column, ``CREATE VIRTUAL TABLE IF NOT EXISTS`` silently
+        keeps the old schema and subsequent INSERTs with 5 values fail.
+        We detect this by checking the column count and recreating if needed.
+        """
         try:
+            # Check whether the existing table has the expected columns.
+            try:
+                cur = self.conn.execute("PRAGMA table_info(paragraphs_fts)")
+                existing_cols = [row[1] for row in cur.fetchall()]
+                if existing_cols and "context" not in existing_cols:
+                    logger.info("FTS5 table schema outdated (missing 'context'). Recreating.")
+                    self.conn.execute("DROP TABLE IF EXISTS paragraphs_fts")
+                    self.conn.commit()
+            except sqlite3.OperationalError:
+                pass  # Table doesn't exist yet — will be created below.
+
             self.conn.execute(
                 """
                 CREATE VIRTUAL TABLE IF NOT EXISTS paragraphs_fts USING fts5(

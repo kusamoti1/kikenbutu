@@ -62,7 +62,8 @@ CREATE TABLE IF NOT EXISTS law_article_links (
     standard_id INTEGER,
     law_name TEXT,
     article_number TEXT,
-    FOREIGN KEY(standard_id) REFERENCES standards(id)
+    FOREIGN KEY(standard_id) REFERENCES standards(id),
+    UNIQUE(standard_id, law_name, article_number)
 );
 """
 
@@ -149,7 +150,7 @@ def insert_law_article_links(conn: sqlite3.Connection, standard_id: int, links: 
     if not links:
         return
     conn.executemany(
-        "INSERT INTO law_article_links (standard_id, law_name, article_number) VALUES (?, ?, ?)",
+        "INSERT OR IGNORE INTO law_article_links (standard_id, law_name, article_number) VALUES (?, ?, ?)",
         [(standard_id, law_name, article_number) for law_name, article_number in links],
     )
     conn.commit()

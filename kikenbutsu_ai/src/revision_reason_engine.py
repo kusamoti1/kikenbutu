@@ -6,9 +6,9 @@ from typing import List
 # Patterns that detect a revision-reason heading.  The content may span
 # multiple lines until the next heading or a double-newline.
 REASON_PATTERNS = [
-    r"改正理由[：:]\s*((?:.|\n)+?)(?=\n\n|\n[一二三四五六七八九十\d]+[.、]|\Z)",
-    r"趣旨[：:]\s*((?:.|\n)+?)(?=\n\n|\n[一二三四五六七八九十\d]+[.、]|\Z)",
-    r"背景[：:]\s*((?:.|\n)+?)(?=\n\n|\n[一二三四五六七八九十\d]+[.、]|\Z)",
+    r"改正理由[：:]\s*([\s\S]+?)(?=\n\n|\n[一二三四五六七八九十\d]+[.、]|\Z)",
+    r"趣旨[：:]\s*([\s\S]+?)(?=\n\n|\n[一二三四五六七八九十\d]+[.、]|\Z)",
+    r"背景[：:]\s*([\s\S]+?)(?=\n\n|\n[一二三四五六七八九十\d]+[.、]|\Z)",
 ]
 
 

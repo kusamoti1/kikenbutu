@@ -217,7 +217,13 @@ class GraphSearchEngine:
         equipment_names: Set[str] = set()
         for art_node in matching_articles:
             for ntc_node in self.graph.predecessors(art_node):
+                ntc_data = self.graph.nodes[ntc_node]
+                if ntc_data.get("type") != "Notification":
+                    continue
                 for std_node in self.graph.predecessors(ntc_node):
+                    std_data = self.graph.nodes[std_node]
+                    if std_data.get("type") != "Standard":
+                        continue
                     for eq_node in self.graph.predecessors(std_node):
                         eq_data = self.graph.nodes[eq_node]
                         if eq_data.get("type") == "Equipment":
@@ -300,7 +306,7 @@ class GraphSearchEngine:
             placeholders = ", ".join(["?"] * len(standard_names))
             rows = conn.execute(
                 f"""
-                SELECT d.title, p.text, p.confidence
+                SELECT d.title, p.text, p.confidence, COALESCE(p.context, '')
                 FROM paragraphs p
                 JOIN documents d ON p.document_id = d.id
                 WHERE d.title IN ({placeholders})
@@ -309,7 +315,7 @@ class GraphSearchEngine:
                 standard_names,
             ).fetchall()
             return [
-                {"title": r[0], "text": r[1], "confidence": r[2]}
+                {"title": r[0], "text": r[1], "confidence": r[2], "context": r[3]}
                 for r in rows
             ]
         finally:

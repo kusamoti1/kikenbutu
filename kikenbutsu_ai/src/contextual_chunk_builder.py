@@ -72,20 +72,31 @@ _HEADING_PATTERNS: List[Tuple[int, re.Pattern[str]]] = [
     # Level 1: 「第1 ...」「第一 ...」
     (1, re.compile(r"^第[0-9一二三四五六七八九十百]+[条章節款の\s]")),
     # Level 2: 「1 ...」「１ ...」(fullwidth/halfwidth digit at line start)
-    (2, re.compile(r"^[0-9０-９]+[\s　.．、]")),
+    # Require that the digit portion is short (≤3 chars) to avoid matching
+    # measurement values like "300kl以上" or dates like "2024年".
+    (2, re.compile(r"^[0-9０-９]{1,2}[\s　.．、]")),
     # Level 3: 「(1) ...」「（1） ...」
     (3, re.compile(r"^[（(][0-9０-９]+[）)]\s*")),
     # Level 3 alt: 「ア ...」「イ ...」（katakana bullet）
     (3, re.compile(r"^[アイウエオカキクケコ][\s　]")),
-    # Special: 「記」 marker (common in notifications)
-    (1, re.compile(r"^記\s*$")),
+    # Special: 「記」 marker (common in notifications).
+    # Must be exactly the single character「記」on its own line (no trailing text).
+    (1, re.compile(r"^記$")),
 ]
+
+# Patterns that look like headings but are actually data values.
+_FALSE_HEADING_RE = re.compile(
+    r"^[0-9０-９]+\s*(?:年|月|日|kl|KL|ℓ|リットル|m|mm|cm|km|kg|t|トン|万|億|号|倍)"
+)
 
 
 def _detect_heading(line: str) -> Optional[Tuple[int, str]]:
     """If *line* looks like a heading, return (level, heading_text)."""
     stripped = line.strip()
     if not stripped or len(stripped) > 200:
+        return None
+    # Reject lines that start with a number followed by a unit/date marker.
+    if _FALSE_HEADING_RE.match(stripped):
         return None
     for level, pattern in _HEADING_PATTERNS:
         if pattern.match(stripped):

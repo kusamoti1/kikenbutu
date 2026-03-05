@@ -17,7 +17,6 @@ import streamlit as st
 from graph_search_engine import (
     GraphSearchEngine,
     TraversalResult,
-    format_result_as_guarded_answer,
     load_graph,
 )
 from inspection_ai import list_required_standards
