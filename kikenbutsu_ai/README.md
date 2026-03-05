@@ -56,6 +56,11 @@ python run_pipeline.py
 - `notebooklm_export/*.md`
 - `logs/pipeline.log`
 
+### 4-3. NotebookLMへ入れるファイルの場所
+- NotebookLMに取り込むファイルは、パイプライン完了後に `notebooklm_export/` に出力される `*.md` です。
+- 1ファイル10MBを超える場合は自動分割され、`*_part1.md` のように複数ファイルで出力されます。
+- 出力が空の場合は、`input_pdf/` にPDFがあるか、または対応する `ocr_text/<PDF名>.txt` があるか確認してください。
+
 ### 4-2. UI起動
 ```bash
 streamlit run src/app_streamlit.py
