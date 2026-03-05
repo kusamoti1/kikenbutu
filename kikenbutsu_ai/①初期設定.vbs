@@ -1,23 +1,22 @@
 ' ==================================================
-'  危険物法令ナレッジグラフAI - 初期設定
-'  ダブルクリックで実行してください
+'  Kikenbutsu Knowledge Graph AI - Initial Setup
+'  Double-click to run
 ' ==================================================
 Dim WshShell, batPath, fso, result
 
 Set WshShell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 
-' 対応する .bat ファイルのパスを取得
+' Resolve the paired .bat path
 batPath = Replace(WScript.ScriptFullName, ".vbs", ".bat")
 
-' .bat ファイルが存在するか確認
+' Verify .bat file exists
 If Not fso.FileExists(batPath) Then
-    MsgBox "初期設定ファイル（.bat）が見つかりません。" & vbCrLf & _
-           "このファイルと同じフォルダに「①初期設定.bat」があるか" & vbCrLf & _
-           "確認してください。", vbExclamation, "危険物法令ナレッジAI"
+    MsgBox "The setup batch file (.bat) was not found." & vbCrLf & _
+           "Please make sure the matching .bat file is in the same folder.", _
+           vbExclamation, "Kikenbutsu Knowledge Graph AI"
     WScript.Quit
 End If
 
-' 初期設定は進捗を見せる（1 = ウィンドウ表示）
-' True = 完了まで待つ
+' Show progress window (1) and wait until completion (True)
 result = WshShell.Run("""" & batPath & """", 1, True)
