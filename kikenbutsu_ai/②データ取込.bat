@@ -8,6 +8,11 @@ echo    Kikenbutsu Knowledge Graph AI - Data Import
 echo  ============================================
 echo.
 
+REM Ensure output folders exist
+if not exist "%~dp0database"           mkdir "%~dp0database"
+if not exist "%~dp0logs"               mkdir "%~dp0logs"
+if not exist "%~dp0notebooklm_export"  mkdir "%~dp0notebooklm_export"
+
 REM -------------------------------------------------------
 REM  Check Python availability
 REM -------------------------------------------------------
