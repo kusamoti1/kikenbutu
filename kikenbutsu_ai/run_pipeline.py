@@ -9,10 +9,12 @@ from src.database_writer import (
     connect_db,
     document_exists,
     ensure_equipment,
+    ensure_era,
     ensure_standard,
     insert_contextual_paragraphs,
     insert_document,
     insert_law_article_links,
+    insert_revision_reasons,
 )
 from src.dictionary_corrector import apply_dictionary, load_dictionary
 from src.equipment_tree_builder import detect_equipment
@@ -22,6 +24,7 @@ from src.law_article_linker import extract_law_article_links
 from src.notebooklm_exporter import export_markdown_by_equipment
 from src.old_kanji_converter import convert_old_kanji
 from src.paragraph_splitter import split_paragraphs
+from src.revision_reason_engine import extract_revision_reasons
 
 BASE_DIR = Path(__file__).resolve().parent
 INPUT_DIR = BASE_DIR / "input_pdf"
@@ -124,14 +127,16 @@ def main() -> None:
                     logging.info("Skipping duplicate: %s", pdf_path.name)
                     continue
 
-                document_id = insert_document(conn, title=title, year=year, source=source, file_path=file_path_str)
-
                 text = load_ocr_text(pdf_path.stem)
                 if not text:
                     text = try_ocr_pipeline(pdf_path)
                 if not text:
                     logging.warning("No OCR text available for %s. Skipping.", pdf_path.name)
                     continue
+
+                # Insert document AFTER confirming OCR text exists to avoid
+                # orphan rows (document with no paragraphs).
+                document_id = insert_document(conn, title=title, year=year, source=source, file_path=file_path_str)
 
                 text = convert_old_kanji(apply_dictionary(text, dictionary))
                 paragraphs = split_paragraphs(text)
@@ -141,6 +146,8 @@ def main() -> None:
                 equipment_names = list(dict.fromkeys(detect_equipment(text)))
                 law_links = extract_law_article_links(text)
                 eras = detect_eras(text)
+                for era in eras:
+                    ensure_era(conn, era)
 
                 # Build context-enriched chunks (Contextual Retrieval).
                 chunks = build_contextual_chunks(
@@ -164,6 +171,9 @@ def main() -> None:
                     std_id = ensure_standard(conn, eq_id, title)
                     if law_links:
                         insert_law_article_links(conn, std_id, law_links)
+                    reasons = extract_revision_reasons(text)
+                    if reasons:
+                        insert_revision_reasons(conn, std_id, reasons)
 
                     # Create one graph record per (era, article) pair so that
                     # each LawArticle gets its own node in the knowledge graph.

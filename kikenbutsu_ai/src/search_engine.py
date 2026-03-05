@@ -73,19 +73,20 @@ class SearchEngine:
             "FROM paragraphs p JOIN documents d ON p.document_id = d.id"
         ).fetchall()
 
-        # Wrap in explicit transaction for atomicity.
-        self.conn.execute("BEGIN")
+        # Use the connection as a context manager for atomic commit/rollback.
+        # Explicit BEGIN/COMMIT can conflict with Python's sqlite3 auto-
+        # transaction, so ``with conn:`` is the safer pattern.
         try:
-            self.conn.execute("DELETE FROM paragraphs_fts")
-            if rows:
-                self.conn.executemany(
-                    "INSERT INTO paragraphs_fts (paragraph_id, title, context, text, confidence) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    rows,
-                )
-            self.conn.execute("COMMIT")
+            with self.conn:
+                self.conn.execute("DELETE FROM paragraphs_fts")
+                if rows:
+                    self.conn.executemany(
+                        "INSERT INTO paragraphs_fts (paragraph_id, title, context, text, confidence) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        rows,
+                    )
         except Exception:
-            self.conn.execute("ROLLBACK")
+            logger.error("Failed to rebuild FTS index", exc_info=True)
             raise
 
     def search(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
@@ -121,16 +122,24 @@ class SearchEngine:
 
         if not rows:
             try:
+                # Escape LIKE wildcards so user input like "100%" is treated
+                # literally rather than as a pattern.
+                like_query = (
+                    safe_query.replace("\\", "\\\\")
+                    .replace("%", "\\%")
+                    .replace("_", "\\_")
+                )
+                like_pattern = f"%{like_query}%"
                 rows = self.conn.execute(
                     """
                     SELECT p.id, d.title, COALESCE(p.context, ''), p.text, p.confidence
                     FROM paragraphs p
                     JOIN documents d ON p.document_id = d.id
-                    WHERE p.text LIKE ? OR d.title LIKE ? OR p.context LIKE ?
+                    WHERE p.text LIKE ? ESCAPE '\\' OR d.title LIKE ? ESCAPE '\\' OR p.context LIKE ? ESCAPE '\\'
                     ORDER BY p.id
                     LIMIT ?
                     """,
-                    (f"%{safe_query}%", f"%{safe_query}%", f"%{safe_query}%", k),
+                    (like_pattern, like_pattern, like_pattern, k),
                 ).fetchall()
             except sqlite3.OperationalError as exc:
                 logger.error("LIKE search also failed: %s", exc)

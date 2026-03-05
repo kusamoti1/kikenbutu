@@ -60,6 +60,8 @@ def export_markdown_by_equipment(
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
+    # Use WAL mode to avoid locking if pipeline runs concurrently.
+    conn.execute("PRAGMA journal_mode = WAL")
 
     try:
         equipment_rows = conn.execute("SELECT id, name FROM equipment ORDER BY name").fetchall()
@@ -213,18 +215,31 @@ def _export_sql_only(
     eq_name_row = conn.execute(
         "SELECT name FROM equipment WHERE id = ?", (equipment_id,)
     ).fetchone()
-    _eq_like = _escape_like(eq_name_row[0]) if eq_name_row else ""
-    paragraphs = conn.execute(
-        """
-        SELECT DISTINCT p.id, p.text, COALESCE(p.context, '') FROM paragraphs p
-        JOIN documents d ON p.document_id = d.id
-        LEFT JOIN standards s ON s.name = d.title AND s.equipment_id = ?
-        WHERE s.id IS NOT NULL
-           OR p.context LIKE ? ESCAPE '\\'
-        ORDER BY d.title, p.id
-        """,
-        (equipment_id, f"%{_eq_like}%"),
-    ).fetchall()
+    _eq_like = _escape_like(eq_name_row[0]) if eq_name_row else None
+    if _eq_like:
+        paragraphs = conn.execute(
+            """
+            SELECT DISTINCT p.id, p.text, COALESCE(p.context, '') FROM paragraphs p
+            JOIN documents d ON p.document_id = d.id
+            LEFT JOIN standards s ON s.name = d.title AND s.equipment_id = ?
+            WHERE s.id IS NOT NULL
+               OR p.context LIKE ? ESCAPE '\\'
+            ORDER BY d.title, p.id
+            """,
+            (equipment_id, f"%{_eq_like}%"),
+        ).fetchall()
+    else:
+        # Without an equipment name, only match by standard-title join
+        # to avoid LIKE '%%' matching all paragraphs in the database.
+        paragraphs = conn.execute(
+            """
+            SELECT DISTINCT p.id, p.text, COALESCE(p.context, '') FROM paragraphs p
+            JOIN documents d ON p.document_id = d.id
+            JOIN standards s ON s.name = d.title AND s.equipment_id = ?
+            ORDER BY d.title, p.id
+            """,
+            (equipment_id,),
+        ).fetchall()
     # Strip the p.id used for DISTINCT ordering.
     paragraphs = [(row[1], row[2]) for row in paragraphs]
 
