@@ -1,41 +1,81 @@
 from __future__ import annotations
 
 import re
-from typing import List
 
-# Maximum length of a single paragraph before forced splitting.
-_MAX_PARAGRAPH_CHARS = 2000
+# 法令文書で段落開始になりやすいパターン
+_BOUNDARY_RE = re.compile(
+    r"^("
+    r"第[0-9一二三四五六七八九十百千]+条(?:の[0-9一二三四五六七八九十]+)?"
+    r"|第[0-9一二三四五六七八九十]+項"
+    r"|第[0-9一二三四五六七八九十]+号"
+    r"|[0-9]+[\.．、)]"
+    r"|[①-⑳]"
+    r"|（[0-9一二三四五六七八九十]+）"
+    r"|[アイウエオカキクケコサシスセソタチツテトナニヌネノ]"
+    r"|附則"
+    r"|別記"
+    r"|別添"
+    r")"
+)
 
 
-def split_paragraphs(text: str) -> List[str]:
-    """Split notice text by blank lines.
+def _normalize_lines(text: str) -> list[str]:
+    t = text.replace("\r\n", "\n").replace("\r", "\n")
+    lines = [ln.strip() for ln in t.split("\n")]
+    # 連続空白を潰す（OCR崩れ軽減）
+    lines = [re.sub(r"\s+", " ", ln) for ln in lines]
+    return lines
 
-    If the OCR output has no blank lines at all the text is split by
-    common Japanese structural markers (「記」, numbered items, etc.)
-    to avoid producing a single giant paragraph.
-    """
-    raw_parts = re.split(r"\n\s*\n+", text)
-    paragraphs = [p.strip() for p in raw_parts if p.strip()]
 
-    # If only one huge paragraph was produced, try splitting on
-    # Japanese structural cues that often appear in notices.
-    if len(paragraphs) == 1 and len(paragraphs[0]) > _MAX_PARAGRAPH_CHARS:
-        secondary = re.split(r"\n(?=\d+\s|第[0-9一二三四五六七八九十]+\s|記\n|別[記紙])", paragraphs[0])
-        secondary = [p.strip() for p in secondary if p.strip()]
-        if len(secondary) > 1:
-            paragraphs = secondary
+def split_paragraphs(text: str, min_len: int = 20) -> list[str]:
+    lines = _normalize_lines(text)
+    paragraphs: list[str] = []
+    current: list[str] = []
 
-    # Hard-split any remaining oversized paragraphs.
-    result: List[str] = []
+    def flush() -> None:
+        if not current:
+            return
+        para = " ".join(current).strip()
+        if para:
+            paragraphs.append(para)
+        current.clear()
+
+    for ln in lines:
+        if not ln:
+            flush()
+            continue
+
+        boundary = bool(_BOUNDARY_RE.match(ln))
+
+        # OCR由来の短文折返しは、境界でなければ前段落に吸収
+        if boundary:
+            flush()
+            current.append(ln)
+            continue
+
+        if current:
+            # 箇条書き/表崩れらしき短行は連結
+            if len(ln) < 14:
+                current.append(ln)
+            else:
+                # 直前が短くてつながる場合は連結、それ以外は改段落
+                prev = current[-1]
+                if len(prev) < 14 or prev.endswith("。") is False:
+                    current.append(ln)
+                else:
+                    flush()
+                    current.append(ln)
+        else:
+            current.append(ln)
+
+    flush()
+
+    # 極端に短い断片は前段落へ吸収
+    merged: list[str] = []
     for p in paragraphs:
-        while len(p) > _MAX_PARAGRAPH_CHARS:
-            # Try to split at the last newline within the limit.
-            idx = p.rfind("\n", 0, _MAX_PARAGRAPH_CHARS)
-            if idx == -1:
-                idx = _MAX_PARAGRAPH_CHARS
-            result.append(p[:idx].strip())
-            p = p[idx:].strip()
-        if p:
-            result.append(p)
+        if len(p) < min_len and merged:
+            merged[-1] = f"{merged[-1]} {p}".strip()
+        else:
+            merged.append(p)
 
-    return result
+    return merged
