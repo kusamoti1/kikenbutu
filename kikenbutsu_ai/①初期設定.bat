@@ -49,6 +49,10 @@ if %errorlevel% equ 0 (
 
     python -m pip install -r "%~dp0requirements.txt"
     if %errorlevel% neq 0 (
+        echo  Standard install failed. Retrying with --user...
+        python -m pip install --user -r "%~dp0requirements.txt"
+    )
+    if %errorlevel% neq 0 (
         echo.
         echo  [!] Error occurred during package installation.
         echo      Check your internet connection and try again.

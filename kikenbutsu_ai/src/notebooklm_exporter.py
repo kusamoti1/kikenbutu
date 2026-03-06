@@ -1,337 +1,117 @@
-"""NotebookLM Markdown exporter.
-
-Generates one Markdown file per equipment type, using deterministic
-graph traversal to collect all related content.  When the knowledge
-graph is available, data is gathered by traversing
-Equipment → Standard → Notification → LawArticle / Era.  This
-ensures that every piece of content has a clear provenance path.
-
-Falls back to SQL-only collection when no graph is available.
-"""
-
 from __future__ import annotations
 
-import logging
 import sqlite3
 from pathlib import Path
-from typing import Optional
-
-import networkx as nx
-
-logger = logging.getLogger(__name__)
 
 MAX_FILE_SIZE_MB = 10
 
-SECTIONS = [
-    "概要",
-    "昭和基準",
-    "平成改正",
-    "令和基準",
-    "改正理由",
-    "関係通知",
-    "関係条文",
-    "原文",
-    "巡回経路",
-]
 
-ERA_SECTION_MAP = {
-    "昭和": "昭和基準",
-    "平成": "平成改正",
-    "令和": "令和基準",
-}
+def _write_md(path: Path, title: str, body: str) -> list[Path]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = f"# {title}\n\n{body}\n"
+    b = data.encode("utf-8")
+    limit = MAX_FILE_SIZE_MB * 1024 * 1024
+    if len(b) <= limit:
+        path.write_text(data, encoding="utf-8")
+        return [path]
 
-_MAX_SUMMARY_ITEMS = 30
+    parts: list[Path] = []
+    chunk = []
+    size = 0
+    idx = 1
+    for line in data.splitlines(keepends=True):
+        lb = line.encode("utf-8")
+        if size + len(lb) > limit and chunk:
+            p = path.with_stem(f"{path.stem}_part{idx}")
+            p.write_text("".join(chunk), encoding="utf-8")
+            parts.append(p)
+            chunk, size = [], 0
+            idx += 1
+        chunk.append(line)
+        size += len(lb)
+    if chunk:
+        p = path.with_stem(f"{path.stem}_part{idx}")
+        p.write_text("".join(chunk), encoding="utf-8")
+        parts.append(p)
+    return parts
 
 
-def _escape_like(s: str) -> str:
-    """Escape SQL LIKE wildcard characters ``%`` and ``_``."""
-    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+def _rows(conn: sqlite3.Connection, sql: str, params=()):
+    return conn.execute(sql, params).fetchall()
 
 
-def export_markdown_by_equipment(
-    db_path: Path,
-    output_dir: Path,
-    graph: Optional[nx.DiGraph] = None,
-) -> None:
-    """Export Markdown files for NotebookLM.
-
-    If *graph* is provided, content is collected via deterministic
-    graph traversal.  Otherwise, plain SQL queries are used.
-    """
+def export_markdown_bundle(conn: sqlite3.Connection, output_dir: Path) -> list[tuple[str, str, Path]]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
-    # Use WAL mode to avoid locking if pipeline runs concurrently.
-    conn.execute("PRAGMA journal_mode = WAL")
+    records: list[tuple[str, str, Path]] = []
 
-    try:
-        equipment_rows = conn.execute("SELECT id, name FROM equipment ORDER BY name").fetchall()
-        if not equipment_rows:
-            logger.warning("No equipment data found. NotebookLM export skipped.")
-            return
+    # 1) 設備別
+    eq_rows = _rows(
+        conn,
+        """
+        SELECT e.name, d.title, p.text_normalized, p.needs_review, p.confidence_avg
+        FROM equipment e
+        JOIN document_equipment_links l ON l.equipment_id=e.id
+        JOIN documents d ON d.id=l.document_id
+        LEFT JOIN paragraphs p ON p.document_id=d.id
+        ORDER BY e.name, d.title, p.paragraph_index
+        """,
+    )
+    by_eq: dict[str, list[tuple]] = {}
+    for r in eq_rows:
+        by_eq.setdefault(r[0], []).append(r)
 
-        for equipment_id, equipment_name in equipment_rows:
-            if graph is not None:
-                _export_with_graph(conn, output_dir, equipment_id, equipment_name, graph)
-            else:
-                _export_sql_only(conn, output_dir, equipment_id, equipment_name)
-    finally:
-        conn.close()
-
-
-# ---------------------------------------------------------------------------
-# Graph-based export (deterministic traversal)
-# ---------------------------------------------------------------------------
-
-def _export_with_graph(
-    conn: sqlite3.Connection,
-    output_dir: Path,
-    equipment_id: int,
-    equipment_name: str,
-    graph: nx.DiGraph,
-) -> None:
-    """Collect content by traversing the knowledge graph."""
-    section_content: dict[str, list[str]] = {s: [] for s in SECTIONS}
-
-    start_node = f"Equipment:{equipment_name}"
-    if start_node not in graph:
-        # Fall back to SQL if the equipment is not in the graph.
-        _export_sql_only(conn, output_dir, equipment_id, equipment_name)
-        return
-
-    traversal_log: list[str] = [f"起点: Equipment:{equipment_name}"]
-    standard_names: list[str] = []
-
-    # Loop 1: Equipment → Standards
-    for std_node in graph.successors(start_node):
-        std_data = graph.nodes[std_node]
-        if std_data.get("type") != "Standard":
-            continue
-        std_label = std_data.get("label", std_node)
-        standard_names.append(std_label)
-        section_content["関係通知"].append(f"- {std_label}")
-        edge = graph.edges[start_node, std_node]
-        traversal_log.append(f"  → ({edge.get('relation', '?')}) Standard:{std_label}")
-
-        # Loop 2: Standard → Notifications
-        for ntc_node in graph.successors(std_node):
-            ntc_data = graph.nodes[ntc_node]
-            if ntc_data.get("type") != "Notification":
+    for eq, rows in by_eq.items():
+        lines = ["## 対象", f"- 設備: {eq}", "", "## 原文引用"]
+        for _, title, text, needs_review, conf in rows[:800]:
+            if not text:
                 continue
-            edge = graph.edges[std_node, ntc_node]
-            traversal_log.append(f"    → ({edge.get('relation', '?')}) Notification:{ntc_data.get('label', '')}")
+            warn = "（OCR低信頼・要人手確認）" if needs_review else ""
+            lines.append(f"- [{title}] {text[:240]} {warn} 信頼度:{conf if conf is not None else '不明'}")
+        paths = _write_md(output_dir / f"{eq}.md", f"{eq} 向け整理", "\n".join(lines))
+        for p in paths:
+            records.append(("equipment", eq, p))
 
-            # Loop 3: Notification → LawArticle / Era
-            for leaf_node in graph.successors(ntc_node):
-                leaf_data = graph.nodes[leaf_node]
-                leaf_label = leaf_data.get("label", leaf_node)
-                leaf_type = leaf_data.get("type", "")
-                edge = graph.edges[ntc_node, leaf_node]
-                traversal_log.append(f"      → ({edge.get('relation', '?')}) {leaf_type}:{leaf_label}")
+    # 2) 差分別
+    rev_rows = _rows(
+        conn,
+        """
+        SELECT e.name, r.diff_summary, r.old_text, r.new_text
+        FROM revisions r JOIN equipment e ON e.id=r.equipment_id
+        ORDER BY e.name, r.id
+        """,
+    )
+    by_rev: dict[str, list[tuple]] = {}
+    for r in rev_rows:
+        by_rev.setdefault(r[0], []).append(r)
+    for eq, rows in by_rev.items():
+        lines = ["## 改正差分"]
+        for _, summ, old_t, new_t in rows:
+            lines += [f"- 差分要約: {summ}", "### 旧基準", old_t[:800], "### 新基準", new_t[:800], ""]
+        paths = _write_md(output_dir / f"{eq}_改正差分.md", f"{eq} 改正差分", "\n".join(lines))
+        for p in paths:
+            records.append(("revision", eq, p))
 
-                if leaf_type == "LawArticle":
-                    entry = f"- {leaf_label}"
-                    if entry not in section_content["関係条文"]:
-                        section_content["関係条文"].append(entry)
-                elif leaf_type == "Era":
-                    # Record which eras are linked.
-                    pass  # Used implicitly by paragraph classification below.
+    # 3) 共通条文別
+    law_rows = _rows(
+        conn,
+        """
+        SELECT law_name, article_number, COALESCE(paragraph_number,''), COALESCE(item_number,''), p.text_normalized
+        FROM law_article_links l
+        JOIN paragraphs p ON p.id=l.paragraph_id
+        ORDER BY law_name, article_number
+        """,
+    )
+    by_law: dict[str, list[tuple]] = {}
+    for r in law_rows:
+        by_law.setdefault(r[0], []).append(r)
 
-    # Fetch paragraphs from DB with context (exact match by standard/document name).
-    if standard_names:
-        placeholders = ", ".join(["?"] * len(standard_names))
-        paragraphs = conn.execute(
-            f"""
-            SELECT p.text, COALESCE(p.context, '') FROM paragraphs p
-            JOIN documents d ON p.document_id = d.id
-            WHERE d.title IN ({placeholders})
-            ORDER BY d.title, p.id
-            """,
-            standard_names,
-        ).fetchall()
-    else:
-        paragraphs = []
+    for law, rows in by_law.items():
+        lines = ["## 関係条文", f"- 法令名: {law}", ""]
+        for _, article, para, item, text in rows[:1200]:
+            suffix = "".join([f" 第{para}項" if para else "", f" 第{item}号" if item else ""])
+            lines.append(f"- {article}{suffix}: {text[:220]}")
+        paths = _write_md(output_dir / f"{law}_関係条文.md", f"{law} 関係条文", "\n".join(lines))
+        for p in paths:
+            records.append(("law", law, p))
 
-    for text, context in paragraphs:
-        # Use contextualized text in the export so NotebookLM
-        # understands what each chunk is about.
-        if context:
-            section_content["原文"].append(f"> {context}\n> {text}")
-        else:
-            section_content["原文"].append(f"> {text}")
-        for era_key, section_name in ERA_SECTION_MAP.items():
-            if era_key in text or era_key in context:
-                section_content[section_name].append(f"- {text[:200]}")
-
-    # Build concise summary.
-    total = len(paragraphs)
-    summary_lines = [f"- 通知段落数: {total}件"]
-    if standard_names:
-        summary_lines.append(f"- 関連基準数: {len(standard_names)}件")
-    for text, _ctx in paragraphs[:_MAX_SUMMARY_ITEMS]:
-        summary_lines.append(f"- {text[:120]}")
-    if total > _MAX_SUMMARY_ITEMS:
-        summary_lines.append(f"- （他 {total - _MAX_SUMMARY_ITEMS} 件省略）")
-    section_content["概要"] = summary_lines
-
-    # Traversal log section (traceability).
-    section_content["巡回経路"] = ["```", *traversal_log, "```"]
-
-    _write_markdown(output_dir, equipment_name, section_content)
-
-
-# ---------------------------------------------------------------------------
-# SQL-only export (fallback)
-# ---------------------------------------------------------------------------
-
-def _export_sql_only(
-    conn: sqlite3.Connection,
-    output_dir: Path,
-    equipment_id: int,
-    equipment_name: str,
-) -> None:
-    """Collect content using SQL queries only (no graph)."""
-    section_content: dict[str, list[str]] = {s: [] for s in SECTIONS}
-
-    standards = conn.execute(
-        "SELECT id, name FROM standards WHERE equipment_id = ? ORDER BY name", (equipment_id,)
-    ).fetchall()
-
-    for std_id, std_name in standards:
-        section_content["関係通知"].append(f"- {std_name}")
-
-        law_links = conn.execute(
-            "SELECT law_name, article_number FROM law_article_links WHERE standard_id = ?",
-            (std_id,),
-        ).fetchall()
-        for law_name, article_number in law_links:
-            entry = f"- {law_name} {article_number}"
-            if entry not in section_content["関係条文"]:
-                section_content["関係条文"].append(entry)
-
-    # Fetch paragraphs by standard name matching document title, or
-    # by context containing the equipment name (fallback for documents
-    # whose title does not exactly match the standard name).
-    # Use DISTINCT to prevent duplicates when both conditions match.
-    eq_name_row = conn.execute(
-        "SELECT name FROM equipment WHERE id = ?", (equipment_id,)
-    ).fetchone()
-    _eq_like = _escape_like(eq_name_row[0]) if eq_name_row else None
-    if _eq_like:
-        paragraphs = conn.execute(
-            """
-            SELECT DISTINCT p.id, p.text, COALESCE(p.context, '') FROM paragraphs p
-            JOIN documents d ON p.document_id = d.id
-            LEFT JOIN standards s ON s.name = d.title AND s.equipment_id = ?
-            WHERE s.id IS NOT NULL
-               OR p.context LIKE ? ESCAPE '\\'
-            ORDER BY d.title, p.id
-            """,
-            (equipment_id, f"%{_eq_like}%"),
-        ).fetchall()
-    else:
-        # Without an equipment name, only match by standard-title join
-        # to avoid LIKE '%%' matching all paragraphs in the database.
-        paragraphs = conn.execute(
-            """
-            SELECT DISTINCT p.id, p.text, COALESCE(p.context, '') FROM paragraphs p
-            JOIN documents d ON p.document_id = d.id
-            JOIN standards s ON s.name = d.title AND s.equipment_id = ?
-            ORDER BY d.title, p.id
-            """,
-            (equipment_id,),
-        ).fetchall()
-    # Strip the p.id used for DISTINCT ordering.
-    paragraphs = [(row[1], row[2]) for row in paragraphs]
-
-    for text, context in paragraphs:
-        if context:
-            section_content["原文"].append(f"> {context}\n> {text}")
-        else:
-            section_content["原文"].append(f"> {text}")
-        for era_key, section_name in ERA_SECTION_MAP.items():
-            if era_key in text or era_key in context:
-                section_content[section_name].append(f"- {text[:200]}")
-
-    total = len(paragraphs)
-    summary_lines = [f"- 通知段落数: {total}件"]
-    if standards:
-        summary_lines.append(f"- 関連基準数: {len(standards)}件")
-    for text, _ctx in paragraphs[:_MAX_SUMMARY_ITEMS]:
-        summary_lines.append(f"- {text[:120]}")
-    if total > _MAX_SUMMARY_ITEMS:
-        summary_lines.append(f"- （他 {total - _MAX_SUMMARY_ITEMS} 件省略）")
-    section_content["概要"] = summary_lines
-
-    section_content["巡回経路"] = ["（グラフ未使用 — SQL直接取得）"]
-
-    _write_markdown(output_dir, equipment_name, section_content)
-
-
-# ---------------------------------------------------------------------------
-# Markdown writer
-# ---------------------------------------------------------------------------
-
-def _write_markdown(
-    output_dir: Path,
-    equipment_name: str,
-    section_content: dict[str, list[str]],
-) -> None:
-    """Write the assembled section content to Markdown file(s)."""
-    lines = [f"# {equipment_name}", ""]
-    for section in SECTIONS:
-        lines.append(f"## {section}")
-        lines.append("")
-        content = section_content.get(section, [])
-        if content:
-            lines.extend(content)
-        else:
-            lines.append("（データなし）")
-        lines.append("")
-
-    md_text = "\n".join(lines).strip() + "\n"
-
-    size_mb = len(md_text.encode("utf-8")) / (1024 * 1024)
-    if size_mb > MAX_FILE_SIZE_MB:
-        _export_split(output_dir, equipment_name, section_content)
-    else:
-        out = output_dir / f"{equipment_name}.md"
-        out.write_text(md_text, encoding="utf-8")
-
-
-def _export_split(
-    output_dir: Path,
-    equipment_name: str,
-    section_content: dict[str, list[str]],
-) -> None:
-    """Split large equipment files into era-based parts."""
-    base_sections = ["概要", "関係通知", "関係条文", "巡回経路"]
-    era_sections = ["昭和基準", "平成改正", "令和基準"]
-    detail_sections = ["改正理由", "原文"]
-
-    lines = [f"# {equipment_name}（概要）", ""]
-    for s in base_sections:
-        lines.extend([f"## {s}", ""])
-        lines.extend(section_content.get(s, ["（データなし）"]))
-        lines.append("")
-    out = output_dir / f"{equipment_name}_概要.md"
-    out.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
-
-    for s in era_sections:
-        content = section_content.get(s, [])
-        if not content:
-            continue
-        lines = [f"# {equipment_name} — {s}", ""]
-        lines.extend(content)
-        lines.append("")
-        out = output_dir / f"{equipment_name}_{s}.md"
-        out.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
-
-    for s in detail_sections:
-        content = section_content.get(s, [])
-        if not content:
-            continue
-        lines = [f"# {equipment_name} — {s}", ""]
-        lines.extend(content)
-        lines.append("")
-        out = output_dir / f"{equipment_name}_{s}.md"
-        out.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
+    return records
