@@ -44,7 +44,18 @@ pip install -r requirements.txt
 python src/run_pipeline.py
 ```
 
-### 5-2. UI起動
+成果物:
+- `database/kikenbutsu.db`
+- `database/knowledge_graph.graphml`
+- `notebooklm_export/*.md`
+- `logs/pipeline.log`
+
+### 4-3. NotebookLMへ入れるファイルの場所
+- NotebookLMに取り込むファイルは、パイプライン完了後に `notebooklm_export/` に出力される `*.md` です。
+- 1ファイル10MBを超える場合は自動分割され、`*_part1.md` のように複数ファイルで出力されます。
+- 出力が空の場合は、`input_pdf/` にPDFがあるか、または対応する `ocr_text/<PDF名>.txt` があるか確認してください。
+
+### 4-2. UI起動
 ```bash
 streamlit run src/app_streamlit.py
 ```
@@ -77,10 +88,3 @@ streamlit run src/app_streamlit.py
 - UI表示は「原文引用」と「信頼度」を明示
 - 低信頼箇所には `OCR低信頼` / `原本確認推奨`
 - 本システムの結論は参考候補であり、最終判断は原本確認と人手審査
-
-
-## 9. v2改善メモ（今回反映）
-- OCR信頼度は「高信頼 / OCR低信頼 / 信頼度不明」を明示します。
-- `ocr_text/*.txt` 取り込み時は信頼度不明として保存し、原本確認推奨になります（1.0固定はしません）。
-- 差分比較は、設備重なり・タイトル類似・年次順・文書種別を使って比較候補を作り、段落も複数候補から選定します。
-- 年代検索は専用絞り込み（年代のみ、または年代+キーワード）で検索します。

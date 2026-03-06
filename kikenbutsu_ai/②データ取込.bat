@@ -69,14 +69,6 @@ echo  ============================================
 echo    Data import completed
 echo  ============================================
 echo.
-echo  Output files:
-echo    - Database: database\kikenbutsu.db
-echo    - Graph:    database\knowledge_graph.graphml
-echo    - NotebookLM markdown: notebooklm_export\*.md
-echo.
-echo  Opening NotebookLM export folder...
-explorer "%~dp0notebooklm_export"
-echo.
 echo  Next step:
 echo    Run the Step-3 App Launch launcher.
 echo.
