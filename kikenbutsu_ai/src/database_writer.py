@@ -140,12 +140,22 @@ CREATE VIRTUAL TABLE IF NOT EXISTS paragraphs_fts USING fts5(
 """
 
 
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
+    cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+        conn.commit()
+
+
 def connect_db(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
     conn.executescript(SCHEMA)
+    # 旧DBからの移行用（不足カラムがある場合に追加）
+    _ensure_column(conn, "paragraphs", "confidence_known", "confidence_known INTEGER DEFAULT 0")
+    _ensure_column(conn, "paragraphs", "ocr_source", "ocr_source TEXT DEFAULT 'imported_text'")
     return conn
 
 
