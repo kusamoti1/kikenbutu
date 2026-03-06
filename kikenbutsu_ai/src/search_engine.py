@@ -1,160 +1,137 @@
 from __future__ import annotations
 
-import logging
 import sqlite3
 from pathlib import Path
-from typing import Any, Dict, List
-
-logger = logging.getLogger(__name__)
 
 
 class SearchEngine:
-    """Full-text search engine using SQLite FTS5.
-
-    The FTS5 index now includes the ``context`` column so that
-    Contextual Retrieval metadata (equipment, era, heading) is
-    searchable alongside the original paragraph text.
-    """
-
     def __init__(self, db_path: Path):
-        self.db_path = db_path
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
-        self._ensure_fts()
 
-    def _ensure_fts(self) -> None:
-        """Create FTS5 virtual table, recreating if schema has changed.
-
-        If an older database has a ``paragraphs_fts`` table without the
-        ``context`` column, ``CREATE VIRTUAL TABLE IF NOT EXISTS`` silently
-        keeps the old schema and subsequent INSERTs with 5 values fail.
-        We detect this by checking the column count and recreating if needed.
-        """
-        try:
-            # Check whether the existing table has the expected columns.
-            try:
-                cur = self.conn.execute("PRAGMA table_info(paragraphs_fts)")
-                existing_cols = [row[1] for row in cur.fetchall()]
-                if existing_cols and "context" not in existing_cols:
-                    logger.info("FTS5 table schema outdated (missing 'context'). Recreating.")
-                    self.conn.execute("DROP TABLE IF EXISTS paragraphs_fts")
-                    self.conn.commit()
-            except sqlite3.OperationalError:
-                pass  # Table doesn't exist yet — will be created below.
-
-            self.conn.execute(
-                """
-                CREATE VIRTUAL TABLE IF NOT EXISTS paragraphs_fts USING fts5(
-                    paragraph_id UNINDEXED,
-                    title,
-                    context,
-                    text,
-                    confidence UNINDEXED,
-                    tokenize='unicode61'
-                )
-                """
-            )
-            self.conn.commit()
-        except sqlite3.OperationalError:
-            logger.warning("FTS5 is not available. Falling back to LIKE search only.")
-
-    def rebuild_index(self) -> None:
-        """Rebuild the FTS5 index from the paragraphs table.
-
-        The DELETE + INSERT is wrapped in a single transaction so that
-        a crash between the two operations does not leave an empty index.
-        """
-        try:
-            self.conn.execute("SELECT 1 FROM paragraphs_fts LIMIT 1")
-        except sqlite3.OperationalError:
-            return
-
-        rows = self.conn.execute(
-            "SELECT p.id, d.title, COALESCE(p.context, ''), p.text, p.confidence "
-            "FROM paragraphs p JOIN documents d ON p.document_id = d.id"
-        ).fetchall()
-
-        # Use the connection as a context manager for atomic commit/rollback.
-        # Explicit BEGIN/COMMIT can conflict with Python's sqlite3 auto-
-        # transaction, so ``with conn:`` is the safer pattern.
-        try:
-            with self.conn:
-                self.conn.execute("DELETE FROM paragraphs_fts")
-                if rows:
-                    self.conn.executemany(
-                        "INSERT INTO paragraphs_fts (paragraph_id, title, context, text, confidence) "
-                        "VALUES (?, ?, ?, ?, ?)",
-                        rows,
-                    )
-        except Exception:
-            logger.error("Failed to rebuild FTS index", exc_info=True)
-            raise
-
-    def search(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
-        """Search paragraphs using FTS5 MATCH with LIKE fallback.
-
-        The FTS5 index covers title, context, and text — so a query
-        for an equipment name will match both the context tag and any
-        mention in the body text.
-        """
-        if not query or not query.strip():
+    def search_fts(self, query: str, limit: int = 20):
+        if not query.strip():
             return []
-
-        safe_query = query.strip().replace('"', '""')
-        if not safe_query:
-            return []
-
-        rows: list[tuple] = []
-
         try:
-            rows = self.conn.execute(
+            return self.conn.execute(
                 """
-                SELECT paragraph_id, title, context, text, confidence
-                FROM paragraphs_fts
+                SELECT p.id, d.title, COALESCE(d.era_label,'不明'), COALESCE(p.equipment_guess,'共通法令'),
+                       COALESCE(p.text_normalized,p.text,''), p.confidence_avg, p.needs_review,
+                       COALESCE(p.confidence_known,0), COALESCE(p.ocr_source,'imported_text')
+                FROM paragraphs_fts f
+                JOIN paragraphs p ON p.id=f.paragraph_id
+                JOIN documents d ON d.id=p.document_id
                 WHERE paragraphs_fts MATCH ?
-                ORDER BY rank
                 LIMIT ?
                 """,
-                (f'"{safe_query}"', k),
+                (query, limit),
             ).fetchall()
-        except sqlite3.OperationalError as exc:
-            logger.debug("FTS5 search failed (%s), falling back to LIKE", exc)
-            rows = []
+        except sqlite3.OperationalError:
+            like = f"%{query}%"
+            return self.conn.execute(
+                """
+                SELECT p.id, d.title, COALESCE(d.era_label,'不明'), COALESCE(p.equipment_guess,'共通法令'),
+                       COALESCE(p.text_normalized,p.text,''), p.confidence_avg, p.needs_review,
+                       COALESCE(p.confidence_known,0), COALESCE(p.ocr_source,'imported_text')
+                FROM paragraphs p JOIN documents d ON d.id=p.document_id
+                WHERE COALESCE(p.text_normalized,p.text,'') LIKE ? OR d.title LIKE ?
+                LIMIT ?
+                """,
+                (like, like, limit),
+            ).fetchall()
 
-        if not rows:
-            try:
-                # Escape LIKE wildcards so user input like "100%" is treated
-                # literally rather than as a pattern.
-                like_query = (
-                    safe_query.replace("\\", "\\\\")
-                    .replace("%", "\\%")
-                    .replace("_", "\\_")
-                )
-                like_pattern = f"%{like_query}%"
-                rows = self.conn.execute(
-                    """
-                    SELECT p.id, d.title, COALESCE(p.context, ''), p.text, p.confidence
-                    FROM paragraphs p
-                    JOIN documents d ON p.document_id = d.id
-                    WHERE p.text LIKE ? ESCAPE '\\' OR d.title LIKE ? ESCAPE '\\' OR p.context LIKE ? ESCAPE '\\'
-                    ORDER BY p.id
-                    LIMIT ?
-                    """,
-                    (like_pattern, like_pattern, like_pattern, k),
-                ).fetchall()
-            except sqlite3.OperationalError as exc:
-                logger.error("LIKE search also failed: %s", exc)
-                return []
+    def search_by_era(self, era: str, query: str = "", limit: int = 80):
+        if query.strip():
+            like = f"%{query.strip()}%"
+            return self.conn.execute(
+                """
+                SELECT p.id, d.title, COALESCE(d.era_label,'不明'), COALESCE(p.equipment_guess,'共通法令'),
+                       COALESCE(p.text_normalized,p.text,''), p.confidence_avg, p.needs_review,
+                       COALESCE(p.confidence_known,0), COALESCE(p.ocr_source,'imported_text')
+                FROM paragraphs p JOIN documents d ON d.id=p.document_id
+                WHERE COALESCE(d.era_label,'不明') = ?
+                  AND (COALESCE(p.text_normalized,p.text,'') LIKE ? OR d.title LIKE ?)
+                ORDER BY d.year, p.paragraph_index
+                LIMIT ?
+                """,
+                (era, like, like, limit),
+            ).fetchall()
 
-        return [
-            {
-                "paragraph_id": r[0],
-                "title": r[1],
-                "context": r[2],
-                "text": r[3],
-                "confidence": r[4],
-            }
-            for r in rows
-        ]
+        return self.conn.execute(
+            """
+            SELECT p.id, d.title, COALESCE(d.era_label,'不明'), COALESCE(p.equipment_guess,'共通法令'),
+                   COALESCE(p.text_normalized,p.text,''), p.confidence_avg, p.needs_review,
+                   COALESCE(p.confidence_known,0), COALESCE(p.ocr_source,'imported_text')
+            FROM paragraphs p JOIN documents d ON d.id=p.document_id
+            WHERE COALESCE(d.era_label,'不明') = ?
+            ORDER BY d.year, p.paragraph_index
+            LIMIT ?
+            """,
+            (era, limit),
+        ).fetchall()
 
-    def close(self) -> None:
-        self.conn.close()
+    def search_by_equipment(self, equipment: str, limit: int = 30):
+        return self.conn.execute(
+            """
+            SELECT d.title, COALESCE(d.era_label,'不明'), COALESCE(p.text_normalized,p.text,''),
+                   p.confidence_avg, p.needs_review, COALESCE(p.confidence_known,0), COALESCE(p.ocr_source,'imported_text')
+            FROM equipment e
+            JOIN document_equipment_links l ON l.equipment_id=e.id
+            JOIN documents d ON d.id=l.document_id
+            LEFT JOIN paragraphs p ON p.document_id=d.id
+            WHERE e.name = ?
+            ORDER BY d.year, p.paragraph_index
+            LIMIT ?
+            """,
+            (equipment, limit),
+        ).fetchall()
+
+    def search_revisions(self, equipment: str | None = None, limit: int = 50):
+        if equipment:
+            return self.conn.execute(
+                """
+                SELECT e.name, r.topic_label, r.diff_summary, r.old_text, r.new_text,
+                       od.title, nd.title
+                FROM revisions r
+                JOIN equipment e ON e.id=r.equipment_id
+                JOIN documents od ON od.id=r.old_document_id
+                JOIN documents nd ON nd.id=r.new_document_id
+                WHERE e.name = ?
+                ORDER BY r.id DESC LIMIT ?
+                """,
+                (equipment, limit),
+            ).fetchall()
+        return self.conn.execute(
+            """
+            SELECT e.name, r.topic_label, r.diff_summary, r.old_text, r.new_text,
+                   od.title, nd.title
+            FROM revisions r
+            JOIN equipment e ON e.id=r.equipment_id
+            JOIN documents od ON od.id=r.old_document_id
+            JOIN documents nd ON nd.id=r.new_document_id
+            ORDER BY r.id DESC LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+    def inspection_bundle(self, equipment: str):
+        req = self.conn.execute(
+            """
+            SELECT lr.requirement_label, lr.requirement_text, lr.confidence, lr.needs_review
+            FROM legal_requirements lr
+            JOIN equipment e ON e.id=lr.equipment_id
+            WHERE e.name=?
+            ORDER BY lr.id DESC LIMIT 50
+            """,
+            (equipment,),
+        ).fetchall()
+        laws = self.conn.execute(
+            """
+            SELECT l.law_name, l.article_number, COALESCE(l.paragraph_number,''), COALESCE(l.item_number,''),
+                   p.text_normalized, COALESCE(p.confidence_known,0), p.confidence_avg, p.needs_review
+            FROM law_article_links l JOIN paragraphs p ON p.id=l.paragraph_id
+            WHERE p.equipment_guess=?
+            LIMIT 80
+            """,
+            (equipment,),
+        ).fetchall()
+        return req, laws

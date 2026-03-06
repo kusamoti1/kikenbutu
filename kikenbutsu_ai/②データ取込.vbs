@@ -1,6 +1,6 @@
 ' ==================================================
-'  危険物法令ナレッジグラフAI - データ取込
-'  ダブルクリックで実行してください
+'  Kikenbutsu Knowledge Graph AI - Data Import
+'  Double-click to run
 ' ==================================================
 Dim WshShell, batPath, fso, result
 
@@ -10,11 +10,11 @@ Set fso = CreateObject("Scripting.FileSystemObject")
 batPath = Replace(WScript.ScriptFullName, ".vbs", ".bat")
 
 If Not fso.FileExists(batPath) Then
-    MsgBox "データ取込ファイル（.bat）が見つかりません。" & vbCrLf & _
-           "このファイルと同じフォルダに「②データ取込.bat」があるか" & vbCrLf & _
-           "確認してください。", vbExclamation, "危険物法令ナレッジAI"
+    MsgBox "The data import batch file (.bat) was not found." & vbCrLf & _
+           "Please make sure the matching .bat file is in the same folder.", _
+           vbExclamation, "Kikenbutsu Knowledge Graph AI"
     WScript.Quit
 End If
 
-' データ取込は進捗を見せる（1 = ウィンドウ表示）
+' Show progress window (1) and wait until completion (True)
 result = WshShell.Run("""" & batPath & """", 1, True)
