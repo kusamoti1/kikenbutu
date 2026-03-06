@@ -1,22 +1,37 @@
 from __future__ import annotations
 
 import re
-from typing import List
 
-# Patterns that detect a revision-reason heading.  The content may span
-# multiple lines until the next heading or a double-newline.
-REASON_PATTERNS = [
-    r"改正理由[：:]\s*([\s\S]+?)(?=\n\n|\n[一二三四五六七八九十\d]+[.、]|\Z)",
-    r"趣旨[：:]\s*([\s\S]+?)(?=\n\n|\n[一二三四五六七八九十\d]+[.、]|\Z)",
-    r"背景[：:]\s*([\s\S]+?)(?=\n\n|\n[一二三四五六七八九十\d]+[.、]|\Z)",
+KEYWORDS = [
+    "改正の趣旨",
+    "見直しの理由",
+    "技術上の基準の整備",
+    "安全対策の強化",
+    "運用の明確化",
+    "改正理由",
+    "背景",
 ]
 
 
-def extract_revision_reasons(text: str) -> List[str]:
-    reasons: List[str] = []
-    for pattern in REASON_PATTERNS:
-        for m in re.finditer(pattern, text):
-            reason = m.group(1).strip()
-            if reason and reason not in reasons:
-                reasons.append(reason)
-    return reasons
+def extract_revision_reasons(text: str) -> list[tuple[str, float]]:
+    candidates: list[tuple[str, float]] = []
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    for i, ln in enumerate(lines):
+        for kw in KEYWORDS:
+            if kw in ln:
+                snippet = " ".join(lines[i:i + 3])[:240]
+                score = 0.9 if ln.startswith(kw) or "：" in ln else 0.75
+                candidates.append((snippet, score))
+                break
+
+    # パターン抽出
+    for m in re.finditer(r"(改正(?:の)?趣旨[：:].{0,200})", text):
+        candidates.append((m.group(1).strip(), 0.85))
+
+    uniq: list[tuple[str, float]] = []
+    seen: set[str] = set()
+    for txt, conf in candidates:
+        if txt not in seen:
+            seen.add(txt)
+            uniq.append((txt, conf))
+    return uniq
