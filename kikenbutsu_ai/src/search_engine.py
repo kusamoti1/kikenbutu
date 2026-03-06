@@ -15,8 +15,7 @@ class SearchEngine:
             return self.conn.execute(
                 """
                 SELECT p.id, d.title, COALESCE(d.era_label,'不明'), COALESCE(p.equipment_guess,'共通法令'),
-                       COALESCE(p.text_normalized,p.text,''), p.confidence_avg, p.needs_review,
-                       COALESCE(p.confidence_known,0), COALESCE(p.ocr_source,'imported_text')
+                       COALESCE(p.text_normalized,p.text,''), COALESCE(p.confidence_avg,p.confidence,1.0), p.needs_review
                 FROM paragraphs_fts f
                 JOIN paragraphs p ON p.id=f.paragraph_id
                 JOIN documents d ON d.id=p.document_id
@@ -30,8 +29,7 @@ class SearchEngine:
             return self.conn.execute(
                 """
                 SELECT p.id, d.title, COALESCE(d.era_label,'不明'), COALESCE(p.equipment_guess,'共通法令'),
-                       COALESCE(p.text_normalized,p.text,''), p.confidence_avg, p.needs_review,
-                       COALESCE(p.confidence_known,0), COALESCE(p.ocr_source,'imported_text')
+                       COALESCE(p.text_normalized,p.text,''), COALESCE(p.confidence_avg,p.confidence,1.0), p.needs_review
                 FROM paragraphs p JOIN documents d ON d.id=p.document_id
                 WHERE COALESCE(p.text_normalized,p.text,'') LIKE ? OR d.title LIKE ?
                 LIMIT ?
@@ -39,41 +37,10 @@ class SearchEngine:
                 (like, like, limit),
             ).fetchall()
 
-    def search_by_era(self, era: str, query: str = "", limit: int = 80):
-        if query.strip():
-            like = f"%{query.strip()}%"
-            return self.conn.execute(
-                """
-                SELECT p.id, d.title, COALESCE(d.era_label,'不明'), COALESCE(p.equipment_guess,'共通法令'),
-                       COALESCE(p.text_normalized,p.text,''), p.confidence_avg, p.needs_review,
-                       COALESCE(p.confidence_known,0), COALESCE(p.ocr_source,'imported_text')
-                FROM paragraphs p JOIN documents d ON d.id=p.document_id
-                WHERE COALESCE(d.era_label,'不明') = ?
-                  AND (COALESCE(p.text_normalized,p.text,'') LIKE ? OR d.title LIKE ?)
-                ORDER BY d.year, p.paragraph_index
-                LIMIT ?
-                """,
-                (era, like, like, limit),
-            ).fetchall()
-
-        return self.conn.execute(
-            """
-            SELECT p.id, d.title, COALESCE(d.era_label,'不明'), COALESCE(p.equipment_guess,'共通法令'),
-                   COALESCE(p.text_normalized,p.text,''), p.confidence_avg, p.needs_review,
-                   COALESCE(p.confidence_known,0), COALESCE(p.ocr_source,'imported_text')
-            FROM paragraphs p JOIN documents d ON d.id=p.document_id
-            WHERE COALESCE(d.era_label,'不明') = ?
-            ORDER BY d.year, p.paragraph_index
-            LIMIT ?
-            """,
-            (era, limit),
-        ).fetchall()
-
     def search_by_equipment(self, equipment: str, limit: int = 30):
         return self.conn.execute(
             """
-            SELECT d.title, COALESCE(d.era_label,'不明'), COALESCE(p.text_normalized,p.text,''),
-                   p.confidence_avg, p.needs_review, COALESCE(p.confidence_known,0), COALESCE(p.ocr_source,'imported_text')
+            SELECT d.title, COALESCE(d.era_label,'不明'), COALESCE(p.text_normalized,p.text,''), COALESCE(p.confidence_avg,p.confidence,1.0), p.needs_review
             FROM equipment e
             JOIN document_equipment_links l ON l.equipment_id=e.id
             JOIN documents d ON d.id=l.document_id
@@ -89,12 +56,8 @@ class SearchEngine:
         if equipment:
             return self.conn.execute(
                 """
-                SELECT e.name, r.topic_label, r.diff_summary, r.old_text, r.new_text,
-                       od.title, nd.title
-                FROM revisions r
-                JOIN equipment e ON e.id=r.equipment_id
-                JOIN documents od ON od.id=r.old_document_id
-                JOIN documents nd ON nd.id=r.new_document_id
+                SELECT e.name, r.topic_label, r.diff_summary, r.old_text, r.new_text
+                FROM revisions r JOIN equipment e ON e.id=r.equipment_id
                 WHERE e.name = ?
                 ORDER BY r.id DESC LIMIT ?
                 """,
@@ -102,12 +65,8 @@ class SearchEngine:
             ).fetchall()
         return self.conn.execute(
             """
-            SELECT e.name, r.topic_label, r.diff_summary, r.old_text, r.new_text,
-                   od.title, nd.title
-            FROM revisions r
-            JOIN equipment e ON e.id=r.equipment_id
-            JOIN documents od ON od.id=r.old_document_id
-            JOIN documents nd ON nd.id=r.new_document_id
+            SELECT e.name, r.topic_label, r.diff_summary, r.old_text, r.new_text
+            FROM revisions r JOIN equipment e ON e.id=r.equipment_id
             ORDER BY r.id DESC LIMIT ?
             """,
             (limit,),
@@ -126,8 +85,7 @@ class SearchEngine:
         ).fetchall()
         laws = self.conn.execute(
             """
-            SELECT l.law_name, l.article_number, COALESCE(l.paragraph_number,''), COALESCE(l.item_number,''),
-                   p.text_normalized, COALESCE(p.confidence_known,0), p.confidence_avg, p.needs_review
+            SELECT l.law_name, l.article_number, COALESCE(l.paragraph_number,''), COALESCE(l.item_number,''), p.text_normalized
             FROM law_article_links l JOIN paragraphs p ON p.id=l.paragraph_id
             WHERE p.equipment_guess=?
             LIMIT 80

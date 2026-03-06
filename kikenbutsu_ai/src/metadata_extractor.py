@@ -17,41 +17,26 @@ class DocumentMetadata:
 _ERA_RE = re.compile(r"(昭和|平成|令和)\s*([0-9]{1,2})年")
 _YEAR_RE = re.compile(r"(19\d{2}|20\d{2})年")
 
-_SOURCE_PATTERNS: list[tuple[str, str, int]] = [
-    ("消防庁", r"(?:総務省)?消防庁", 100),
-    ("自治体", r"[一-龥]{2,}(?:都|道|府|県)(?:消防本部|消防局)", 90),
-    ("自治体", r"[一-龥]{2,}市消防局", 90),
-    ("自治体", r"[一-龥]{2,}市消防本部", 88),
-    ("自治体", r"[一-龥]{2,}(?:都|道|府|県)", 40),
-    ("自治体", r"[一-龥]{2,}局", 20),
-]
-
 
 def _detect_doc_type(title: str, text: str) -> str:
-    head = f"{title}\n{text[:1200]}"
-    if "施行令" in head:
+    if "施行令" in title or "施行令" in text[:500]:
         return "政令"
-    if "施行規則" in head:
+    if "施行規則" in title or "施行規則" in text[:500]:
         return "規則"
-    if "告示" in head:
+    if "告示" in title or "告示" in text[:500]:
         return "告示"
-    if "通知" in head:
+    if "通知" in title or "通知" in text[:500]:
         return "通知"
-    if "マニュアル" in head:
+    if "マニュアル" in title:
         return "マニュアル"
     return "法令資料"
 
 
 def _detect_source(title: str, text: str) -> str:
-    # 本文全体でなく、タイトル＋冒頭のみを優先判定
-    target = f"{title}\n{text[:2000]}"
-    score = {"消防庁": 0, "自治体": 0}
-    for label, pat, w in _SOURCE_PATTERNS:
-        if re.search(pat, target):
-            score[label] += w
-    if score["消防庁"] >= 80:
+    header = f"{title}\n{text[:800]}"
+    if "消防庁" in header:
         return "消防庁"
-    if score["自治体"] >= 85:
+    if "都道府県" in header or "市" in header or "県" in header:
         return "自治体"
     return "不明"
 
