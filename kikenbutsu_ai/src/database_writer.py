@@ -27,9 +27,7 @@ CREATE TABLE IF NOT EXISTS paragraphs (
     text_normalized TEXT,
     confidence_avg REAL,
     confidence_min REAL,
-    confidence_known INTEGER DEFAULT 0,
-    ocr_source TEXT DEFAULT 'imported_text',
-    needs_review INTEGER DEFAULT 1,
+    needs_review INTEGER DEFAULT 0,
     correction_applied INTEGER DEFAULT 0,
     old_kanji_converted INTEGER DEFAULT 0,
     equipment_guess TEXT,
@@ -216,10 +214,8 @@ def insert_paragraph(
     section_label: str,
     text_original: str,
     text_normalized: str,
-    confidence_avg: float | None,
-    confidence_min: float | None,
-    confidence_known: bool,
-    ocr_source: str,
+    confidence_avg: float,
+    confidence_min: float,
     needs_review: bool,
     correction_applied: bool,
     old_kanji_converted: bool,
@@ -233,31 +229,19 @@ def insert_paragraph(
         INSERT INTO paragraphs (
             document_id, paragraph_index, section_label,
             text_original, text_normalized,
-            confidence_avg, confidence_min, confidence_known, ocr_source, needs_review,
+            confidence_avg, confidence_min, needs_review,
             correction_applied, old_kanji_converted, equipment_guess,
             ocr_applied, preprocess_notes,
             text, context, confidence
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            document_id,
-            paragraph_index,
-            section_label,
-            text_original,
-            text_normalized,
-            confidence_avg,
-            confidence_min,
-            int(confidence_known),
-            ocr_source,
-            int(needs_review),
-            int(correction_applied),
-            int(old_kanji_converted),
-            equipment_guess,
-            int(ocr_applied),
-            preprocess_notes,
-            text_normalized,
-            context,
-            confidence_avg,
+            document_id, paragraph_index, section_label,
+            text_original, text_normalized,
+            confidence_avg, confidence_min, int(needs_review),
+            int(correction_applied), int(old_kanji_converted), equipment_guess,
+            int(ocr_applied), preprocess_notes,
+            text_normalized, context, confidence_avg,
         ),
     )
     conn.commit()
@@ -360,24 +344,5 @@ def record_export_metadata(conn: sqlite3.Connection, export_type: str, target_na
     conn.execute(
         "INSERT INTO export_metadata (export_type, target_name, file_path) VALUES (?, ?, ?)",
         (export_type, target_name, file_path),
-    )
-    conn.commit()
-
-
-def insert_search_index_metadata(
-    conn: sqlite3.Connection,
-    document_id: int,
-    paragraph_id: int,
-    chunk_path: str,
-    embedding_ready: bool,
-    fts_ready: bool,
-) -> None:
-    conn.execute(
-        """
-        INSERT INTO search_index_metadata
-        (document_id, paragraph_id, chunk_path, embedding_ready, fts_ready)
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        (document_id, paragraph_id, chunk_path, int(embedding_ready), int(fts_ready)),
     )
     conn.commit()

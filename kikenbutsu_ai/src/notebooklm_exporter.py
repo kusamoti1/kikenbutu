@@ -48,7 +48,7 @@ def export_markdown_bundle(conn: sqlite3.Connection, output_dir: Path) -> list[t
     eq_rows = _rows(
         conn,
         """
-        SELECT e.name, d.title, p.text_normalized, p.needs_review, p.confidence_avg, COALESCE(p.confidence_known,0)
+        SELECT e.name, d.title, p.text_normalized, p.needs_review, p.confidence_avg
         FROM equipment e
         JOIN document_equipment_links l ON l.equipment_id=e.id
         JOIN documents d ON d.id=l.document_id
@@ -62,11 +62,11 @@ def export_markdown_bundle(conn: sqlite3.Connection, output_dir: Path) -> list[t
 
     for eq, rows in by_eq.items():
         lines = ["## 対象", f"- 設備: {eq}", "", "## 原文引用"]
-        for _, title, text, needs_review, conf, conf_known in rows[:800]:
+        for _, title, text, needs_review, conf in rows[:800]:
             if not text:
                 continue
-            status = "信頼度不明・原本確認推奨" if not conf_known else ("OCR低信頼・要人手確認" if needs_review else "高信頼")
-            lines.append(f"- [{title}] {text[:240]} / {status} / 信頼度:{conf if conf is not None else '不明'}")
+            warn = "（OCR低信頼・要人手確認）" if needs_review else ""
+            lines.append(f"- [{title}] {text[:240]} {warn} 信頼度:{conf if conf is not None else '不明'}")
         paths = _write_md(output_dir / f"{eq}.md", f"{eq} 向け整理", "\n".join(lines))
         for p in paths:
             records.append(("equipment", eq, p))
