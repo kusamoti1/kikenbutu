@@ -1,69 +1,79 @@
-# kikenbutsu_ai
+# 危険物法令ナレッジAI（実務プロトタイプ）
 
-日本の危険物関連法令資料を整理し、原文引用ベースで検索するための **危険物法令ナレッジグラフAI** です。
+消防職員向けに、危険物関連法令・通知・基準文書を**原文重視**で検索・比較するためのツールです。  
+このシステムは法解釈を自動決定しません。必ず原本確認を前提とした支援ツールです。
 
-## 1. できること
-- PDF群を処理し、段落単位でSQLiteへ格納
-- OCR辞書補正・旧漢字変換
-- 設備・通知・条文リンクのナレッジグラフ生成
-- 差分比較（`difflib`）や改正理由抽出の土台
-- Streamlit UIで「設備検索 / 年代検索 / 差分検索 / 査察AI」
-- NotebookLM向けMarkdownエクスポート
+## 1. このアプリの目的
+- 原文確認（条文・通知の該当箇所）
+- 旧基準 / 新基準の差分確認
+- 改正理由候補の抽出
+- 査察時の確認候補提示
+- NotebookLMに投入しやすい形への整形
 
-## 2. フォルダ構成
-```text
-kikenbutsu_ai/
-  input_pdf/
-  processed_images/
-  ocr_text/
-  chunks/
-  database/
-  dictionary/
-  notebooklm_export/
-  inspection_ai/
-  logs/
-  src/
-  run_pipeline.py
-  requirements.txt
-```
+## 2. 必要なもの
+- Windows 10/11
+- Python 3.11
+- VS Code（推奨）
+- PDFファイル（`input_pdf/`）
+- OCR済みテキスト（任意、`ocr_text/<PDF名>.txt`）
 
-## 3. 初心者向けセットアップ（Windows）
-### 3-1. Pythonのインストール
-1. Python 3.11 を公式サイトからインストール
-2. インストール時に「Add Python to PATH」をチェック
+## 3. インストール
+### 3-1. Python
+1. Python公式サイトから 3.11 をインストール
+2. インストール時に **Add Python to PATH** をON
 
-### 3-2. 必要ライブラリのインストール
+### 3-2. ライブラリ
 ```bash
 pip install -r requirements.txt
 ```
 
-### 3-3. OCRの準備
-- `input_pdf/` にPDFを置く
-- OCR済みテキストがある場合は `ocr_text/<PDF名>.txt` を配置
-- OCR誤字補正は `dictionary/ocr_dictionary.tsv` を編集
+### 3-3. PaddleOCR利用の注意
+- 初回実行時にモデル取得で時間がかかることがあります。
+- ネットワーク制限環境ではOCR処理を先に実施したテキスト（`ocr_text/*.txt`）利用を推奨。
 
-> 注: フルOCR実行（pdf2image / OpenCV / PaddleOCR）を実運用で行う場合、`src/pdf_to_image.py`・`src/image_preprocess.py`・`src/run_ocr.py` をパイプラインに接続して使います。
+## 4. フォルダ構成（主要）
+- `input_pdf/` : 入力PDF
+- `ocr_text/` : OCRテキスト
+- `database/kikenbutsu.db` : 検索DB
+- `notebooklm_export/` : NotebookLM投入用Markdown
+- `logs/` : 実行ログ
 
-## 4. 実行手順
-### 4-1. パイプライン実行
+## 5. 実行方法
+### 5-1. パイプライン実行
 ```bash
-python run_pipeline.py
+python src/run_pipeline.py
 ```
 
-成果物:
-- `database/kikenbutsu.db`
-- `database/knowledge_graph.graphml`
-- `notebooklm_export/*.md`
-- `logs/pipeline.log`
-
-### 4-2. UI起動
+### 5-2. UI起動
 ```bash
 streamlit run src/app_streamlit.py
 ```
 
-## 5. AI設計原則（重要）
-- 推論禁止
-- 解釈生成禁止
-- 原文引用必須
+## 6. NotebookLMへの渡し方
+- パイプライン実行後、`notebooklm_export/*.md` をNotebookLMへアップロードします。
+- 出力形式:
+  - 設備別（例: `地下タンク貯蔵所.md`）
+  - 改正差分別（例: `地下タンク貯蔵所_改正差分.md`）
+  - 法令別（例: `消防法_関係条文.md`）
+- 10MB超は自動分割（`*_part1.md` 形式）されます。
 
-UI表示は上記原則を常に明示します。
+## 7. よくあるエラー
+### 7-1. `Python が見つかりません`
+- Python再インストール時にPATH設定をONにしてください。
+
+### 7-2. `pip` 失敗
+- `python -m ensurepip --upgrade`
+- `python -m pip install --user -r requirements.txt`
+
+### 7-3. 結果が出ない
+- `input_pdf/` にPDFがあるか
+- `ocr_text/` に対応テキストがあるか
+- `logs/pipeline.log` を確認
+
+### 7-4. GitHubコンフリクト解消後に実行エラー
+- `.bat/.vbs/.py` に `<<<<<<<` `=======` `>>>>>>>` が残っていないか確認
+
+## 8. 安全設計（重要）
+- UI表示は「原文引用」と「信頼度」を明示
+- 低信頼箇所には `OCR低信頼` / `原本確認推奨`
+- 本システムの結論は参考候補であり、最終判断は原本確認と人手審査
